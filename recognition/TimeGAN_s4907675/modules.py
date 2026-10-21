@@ -46,3 +46,13 @@ class TimeGAN(nn.Module):
         self.generator = Generator(self.z_dim, hidden_dim, num_layers)
         self.supervisor = Supervisor(hidden_dim, num_layers)
         self.discriminator = Discriminator(hidden_dim, num_layers)
+
+    def sample_noise(self, n, seq_len, device=None):
+        return torch.rand(n, seq_len, self.z_dim, device=device)
+
+    def reconstruct(self, x):
+        return self.recovery(self.embedder(x))
+
+    def generate(self, n, seq_len, device=None):
+        z = self.sample_noise(n, seq_len, device)
+        return self.recovery(self.supervisor(self.generator(z)))

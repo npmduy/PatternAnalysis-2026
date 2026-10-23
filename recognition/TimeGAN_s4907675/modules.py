@@ -55,4 +55,7 @@ class TimeGAN(nn.Module):
 
     def generate(self, n, seq_len, device=None):
         z = self.sample_noise(n, seq_len, device)
-        return self.recovery(self.supervisor(self.generator(z)))
+        e_hat = self.generator(z)
+        h_hat = self.supervisor(e_hat)
+        x_hat = self.recovery(h_hat)
+        return x_hat, h_hat, e_hat

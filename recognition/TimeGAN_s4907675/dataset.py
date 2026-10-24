@@ -49,6 +49,11 @@ class Windows(Dataset):
     def __getitem__(self, index):
         return self._x[index : index + self._seq_len]
 
+    @property
+    def series(self):
+        """The whole scaled split [rows, F] the windows are cut from."""
+        return self._x
+
 def chrono_split(x, train_frac=0.7, val_frac=0.15):
     n = len(x)
     train_cut = int(train_frac * n)

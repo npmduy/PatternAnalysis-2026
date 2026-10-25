@@ -16,6 +16,8 @@ import numpy as np
 import torch
 from skimage.metrics import structural_similarity
 
+from dataset import decode
+
 TICK = 100.0  # one cent in LOBSTER price units
 TARGET_KL = 0.1
 TARGET_SSIM = 0.6
@@ -25,16 +27,14 @@ SPREAD_EDGES = np.arange(-10.5, 81.5)  # 1-tick bins centred on -10..80 ticks
 
 # ----------------------------------------------------------------------------- windows
 
-def sample_windows(x: torch.Tensor, seq_len: int, n: int, rng: np.random.Generator) -> torch.Tensor:
-    """n random windows [n, seq_len, F] cut from a scaled split [rows, F]."""
-    start = torch.as_tensor(rng.integers(0, len(x) - seq_len + 1, n))
-    return x[start[:, None] + torch.arange(seq_len)]
+def to_raw(scaler, x: torch.Tensor, anchors: torch.Tensor, representation: str = "raw") -> np.ndarray:
+    """Scaled model windows [n, T, F] -> raw books, with prices on the tick grid and whole-share volumes.
 
-
-def to_raw(scaler, x: torch.Tensor) -> np.ndarray:
-    """Scaled windows [n, T, F] -> raw units, with prices on the tick grid and whole-share volumes."""
+    anchors [n, F] are the real books each window starts from (used by the returns representation).
+    """
     n, t, f = x.shape
-    raw = scaler.inverse_transform(x.reshape(-1, f)).reshape(n, t, f).numpy()
+    features = scaler.inverse_transform(x.reshape(-1, f)).reshape(n, t, f)
+    raw = decode(features, anchors.detach().cpu().double(), representation).numpy()
     raw[..., 0::2] = np.round(raw[..., 0::2] / TICK) * TICK
     raw[..., 1::2] = np.round(raw[..., 1::2])
     return raw
@@ -229,7 +229,8 @@ def plot_training(history: dict, val_rows: list, reference: dict, path: Path) ->
     losses(axes[0, 1], "Phase 2: supervised loss", ["supervised"], log=True)
     losses(axes[0, 2], "Phase 3: adversarial losses", ["g_adv", "g_adv_e", "d"])
     axes[0, 2].axhline(3 * np.log(2), color="grey", linestyle=":", linewidth=1, label="D guessing (3 ln 2)")
-    losses(axes[1, 0], "Phase 3: generator supervised and moment terms", ["g_sup", "g_moment"], log=True)
+    losses(axes[1, 0], "Phase 3: generator supervised, moment and validity terms",
+           ["g_sup", "g_moment", "g_valid"], log=True)
     losses(axes[1, 1], "Phase 3: embedder reconstruction MSE", ["e_recon"], log=True)
     validation(axes[1, 2], "Validation: reconstruction MSE", ["recon_val"], log=True)
     validation(axes[2, 0], "Validation: KL(real || synthetic)", ["kl_spread", "kl_returns"], TARGET_KL,

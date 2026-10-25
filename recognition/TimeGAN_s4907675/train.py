@@ -5,6 +5,10 @@ Three phases: embedder and recovery pretraining, supervisor training, and joint
 adversarial training. Phase 3 is validated every --eval-every iterations against real
 validation windows; the best checkpoint is then scored once on the held-out test hours.
 
+--representation picks how books are fed to the model (raw columns, or price log returns
+with log1p volumes). --lambda-valid adds a penalty on generated books that are crossed or
+have unordered price levels (0 = vanilla).
+
 Outputs in --out-dir: training_curves.png, val_metrics.csv, last.pt, best.pt,
 results.json, test_distributions.png and test_depth.png.
 """
@@ -19,10 +23,10 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from dataset import load_data
+from dataset import REPRESENTATIONS, decode, load_data, max_log_volume
 from modules import TimeGAN
-from utils import (Evaluator, append_csv, describe, mid_price, plot_depth, plot_distributions,
-                   plot_training, print_table, sample_windows, to_raw)
+from utils import (TICK, Evaluator, append_csv, describe, mid_price, plot_depth, plot_distributions,
+                   plot_training, print_table, to_raw)
 
 D_UPDATE_THRESHOLD = 0.15  # the discriminator only trains while its loss is above this
 
@@ -34,6 +38,9 @@ def parse_args():
     p.add_argument("--batch-size", type=int, default=128)
     p.add_argument("--lr", type=float, default=1e-3)
     p.add_argument("--gamma", type=float, default=1.0)
+    p.add_argument("--representation", choices=REPRESENTATIONS, default="raw")
+    p.add_argument("--lambda-valid", type=float, default=0.0,
+                   help="weight of the penalty on crossed books and unordered price levels")
     p.add_argument("--eval-every", type=int, default=1_000, help="phase-3 iterations between validations")
     p.add_argument("--eval-windows", type=int, default=1_000, help="windows generated per validation")
     p.add_argument("--test-windows", type=int, default=4_000, help="windows generated for the final test")
@@ -54,6 +61,15 @@ def moment_loss(x_hat: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
     loss = (std_hat - std).abs().mean() + (x_hat.mean(dim=0) - x.mean(dim=0)).abs().mean()
     return loss
 
+def validity_penalty(book: torch.Tensor, margin: float = 1.0) -> torch.Tensor:
+    """Hinge penalty, in ticks, on books whose best bid is not at least `margin` ticks below the
+    best ask, or whose price levels are less than `margin` ticks apart. Zero for valid books."""
+    ask_p, bid_p = book[..., 0::4] / TICK, book[..., 2::4] / TICK
+    crossed = F.relu(bid_p[..., 0] - ask_p[..., 0] + margin)
+    ask_ladder = F.relu(ask_p[..., :-1] - ask_p[..., 1:] + margin).sum(-1)
+    bid_ladder = F.relu(bid_p[..., 1:] - bid_p[..., :-1] + margin).sum(-1)
+    return (crossed + ask_ladder + bid_ladder).mean()
+
 def reconstruction_step(model: TimeGAN, optim: torch.optim.Optimizer, x: torch.Tensor) -> float:
     mse = F.mse_loss(model.reconstruct(x), x)
     loss = 10 * torch.sqrt(mse)
@@ -70,7 +86,8 @@ def supervisor_step(model: TimeGAN, optim: torch.optim.Optimizer, x: torch.Tenso
     optim.step()
     return loss.item()
 
-def generator_step(model: TimeGAN, optim: torch.optim.Optimizer, x: torch.Tensor, gamma: float) -> dict:
+def generator_step(model: TimeGAN, optim: torch.optim.Optimizer, x: torch.Tensor, anchor: torch.Tensor,
+                   gamma: float, lambda_valid: float, to_book) -> dict:
     x_hat, h_hat, e_hat = model.generate(x.size(0), x.size(1), x.device)
     h = model.embedder(x)
 
@@ -78,14 +95,15 @@ def generator_step(model: TimeGAN, optim: torch.optim.Optimizer, x: torch.Tensor
     loss_g_adv_e = bce_logits(model.discriminator(e_hat), 1.0)
     loss_s = F.mse_loss(model.supervisor(h)[:, :-1], h[:, 1:])
     loss_v = moment_loss(x_hat, x)
-    loss = loss_g_adv + gamma * loss_g_adv_e + 100 * torch.sqrt(loss_s) + 100 * loss_v
+    loss_valid = validity_penalty(to_book(x_hat, anchor))  # generated windows start from the real anchors
+    loss = loss_g_adv + gamma * loss_g_adv_e + 100 * torch.sqrt(loss_s) + 100 * loss_v + lambda_valid * loss_valid
 
     model.zero_grad(set_to_none=True)
     loss.backward()
     optim.step()
 
-    terms = torch.stack([loss, loss_g_adv, loss_g_adv_e, loss_s, loss_v]).detach().tolist()  # one GPU sync
-    return dict(zip(("g_total", "g_adv", "g_adv_e", "g_sup", "g_moment"), terms))
+    terms = torch.stack([loss, loss_g_adv, loss_g_adv_e, loss_s, loss_v, loss_valid]).detach().tolist()  # one GPU sync
+    return dict(zip(("g_total", "g_adv", "g_adv_e", "g_sup", "g_moment", "g_valid"), terms))
 
 def embedder_step(model: TimeGAN, optim: torch.optim.Optimizer, x: torch.Tensor) -> float:
     h = model.embedder(x)
@@ -119,12 +137,18 @@ def adam(*nets: torch.nn.Module, lr: float) -> torch.optim.Optimizer:
     return torch.optim.Adam([p for net in nets for p in net.parameters()], lr=lr)
 
 @torch.no_grad()
-def generate_raw(model: TimeGAN, scaler, n: int, seq_len: int, device) -> np.ndarray:
-    """n synthetic windows in raw LOBSTER units."""
+def generate_raw(model: TimeGAN, scaler, anchors: torch.Tensor, seq_len: int, representation: str,
+                 device) -> np.ndarray:
+    """One synthetic window per anchor (a real starting book), in raw LOBSTER units."""
     model.eval()
-    x_hat, _, _ = model.generate(n, seq_len, device)
+    x_hat, _, _ = model.generate(len(anchors), seq_len, device)
     model.train()
-    return to_raw(scaler, x_hat.cpu())
+    return to_raw(scaler, x_hat.cpu(), anchors, representation)
+
+def real_windows(dataset, n: int, scaler, representation: str, generator: torch.Generator) -> np.ndarray:
+    """n random real windows from one split, in raw LOBSTER units."""
+    x, anchors = dataset.sample(n, generator)
+    return to_raw(scaler, x, anchors, representation)
 
 @torch.no_grad()
 def recon_mse(model: TimeGAN, x: torch.Tensor, device) -> float:
@@ -155,27 +179,32 @@ def main():
     args.out_dir.mkdir(parents=True, exist_ok=True)
     (args.out_dir / "val_metrics.csv").unlink(missing_ok=True)
     torch.manual_seed(args.seed)
-    rng = np.random.default_rng(args.seed)
+    generator = torch.Generator().manual_seed(args.seed)  # for sampling real evaluation windows
     device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
     print(f"device: {device}" + (f" ({torch.cuda.get_device_name()})" if device.type == "cuda" else ""))
+    print(f"representation: {args.representation}, lambda_valid: {args.lambda_valid}")
 
-    train_loader, val_loader, test_loader, scaler = load_data(args.seq_len, args.batch_size)
-    train_x, val_x, test_x = (loader.dataset.series for loader in (train_loader, val_loader, test_loader))
+    train_loader, val_loader, test_loader, scaler = load_data(args.seq_len, args.batch_size, args.representation)
+    train_set, val_set, test_set = train_loader.dataset, val_loader.dataset, test_loader.dataset
 
     # Fixed real windows that generated windows are scored against
     real = {
-        "train": to_raw(scaler, sample_windows(train_x, args.seq_len, args.test_windows, rng)),
-        "val": to_raw(scaler, sample_windows(val_x, args.seq_len, args.eval_windows, rng)),
-        "test": to_raw(scaler, sample_windows(test_x, args.seq_len, args.test_windows, rng)),
+        "train": real_windows(train_set, args.test_windows, scaler, args.representation, generator),
+        "val": real_windows(val_set, args.eval_windows, scaler, args.representation, generator),
+        "test": real_windows(test_set, args.test_windows, scaler, args.representation, generator),
     }
-    log_max = float(np.log1p(scaler.state_dict()["max"][1::2].max().item()))  # largest training volume
+    log_max = max_log_volume(scaler, args.representation)
     mid_ref = float(np.median(mid_price(real["train"])))
     val_eval = Evaluator(real["val"], log_max, mid_ref, seed=args.seed)
     test_eval = Evaluator(real["test"], log_max, mid_ref, seed=args.seed)
     val_reference = val_eval(real["train"])  # what a perfect copy of the training hours would score
-    val_recon_x = sample_windows(val_x, args.seq_len, 2_000, rng)
+    val_recon_x = val_set.sample(2_000, generator)[0]
 
-    model = TimeGAN(train_x.size(-1)).to(device)
+    def to_book(x_hat, anchor):
+        """Model output -> raw book, differentiable, for the validity penalty."""
+        return decode(scaler.inverse_transform_torch(x_hat), anchor, args.representation)
+
+    model = TimeGAN(train_set.series.size(-1)).to(device)
     print(f"parameters: {sum(p.numel() for p in model.parameters()):,}")
     batches = forever(train_loader)
     history = defaultdict(list)  # loss name -> one value per iteration of its phase
@@ -185,7 +214,8 @@ def main():
     t0 = time.perf_counter()
     optim = adam(model.embedder, model.recovery, lr=args.lr)
     for i in range(args.iters):
-        history["recon"].append(reconstruction_step(model, optim, next(batches).to(device)))
+        x, _ = next(batches)
+        history["recon"].append(reconstruction_step(model, optim, x.to(device)))
         log_progress("phase 1", i, args, t0, history, ["recon"])
     timing["phase1_s"] = time.perf_counter() - t0
     print(f"phase 1 done: validation reconstruction MSE {recon_mse(model, val_recon_x, device):.5f}")
@@ -194,7 +224,8 @@ def main():
     t0 = time.perf_counter()
     optim = adam(model.generator, model.supervisor, lr=args.lr)
     for i in range(args.iters):
-        history["supervised"].append(supervisor_step(model, optim, next(batches).to(device)))
+        x, _ = next(batches)
+        history["supervised"].append(supervisor_step(model, optim, x.to(device)))
         log_progress("phase 2", i, args, t0, history, ["supervised"])
     timing["phase2_s"] = time.perf_counter() - t0
 
@@ -208,20 +239,22 @@ def main():
     for i in range(args.iters):
         g_terms, e_losses = [], []
         for _ in range(2):
-            batch = next(batches).to(device)
-            g_terms.append(generator_step(model, optim_g, batch, args.gamma))
-            e_losses.append(embedder_step(model, optim_e, batch))
+            x, anchor = (t.to(device) for t in next(batches))
+            g_terms.append(generator_step(model, optim_g, x, anchor, args.gamma, args.lambda_valid, to_book))
+            e_losses.append(embedder_step(model, optim_e, x))
         for k in g_terms[0]:
             history[k].append(float(np.mean([g[k] for g in g_terms])))
         history["e_recon"].append(float(np.mean(e_losses)))
-        loss_d = discriminator_step(model, optim_d, next(batches).to(device), args.gamma)
+        x, _ = next(batches)
+        loss_d = discriminator_step(model, optim_d, x.to(device), args.gamma)
         history["d"].append(loss_d)
         d_updates += loss_d > D_UPDATE_THRESHOLD
-        log_progress("phase 3", i, args, t0, history, ["g_total", "d", "e_recon"])
+        log_progress("phase 3", i, args, t0, history, ["g_total", "g_valid", "d", "e_recon"])
 
         if (i + 1) % args.eval_every == 0 or i + 1 == args.iters:
             t_eval = time.perf_counter()
-            synth = generate_raw(model, scaler, args.eval_windows, args.seq_len, device)
+            anchors = val_set.sample(args.eval_windows, generator)[1]
+            synth = generate_raw(model, scaler, anchors, args.seq_len, args.representation, device)
             row = {"iter": i + 1, "d_update_share": d_updates / (i + 1 - last_eval),
                    "recon_val": recon_mse(model, val_recon_x, device), **val_eval(synth)}
             d_updates, last_eval = 0, i + 1
@@ -240,9 +273,10 @@ def main():
     timing["validation_s"] = eval_s
 
     # Test once on the held-out final hours: last and best checkpoints vs the real-data reference
-    synth_last = generate_raw(model, scaler, args.test_windows, args.seq_len, device)
+    test_anchors = test_set.sample(args.test_windows, generator)[1]  # generated windows start from real test books
+    synth_last = generate_raw(model, scaler, test_anchors, args.seq_len, args.representation, device)
     model.load_state_dict(torch.load(args.out_dir / "best.pt", map_location=device)["model"])
-    synth_best = generate_raw(model, scaler, args.test_windows, args.seq_len, device)
+    synth_best = generate_raw(model, scaler, test_anchors, args.seq_len, args.representation, device)
     results = {
         "real test": describe(real["test"]),
         "real train (reference)": test_eval(real["train"]),

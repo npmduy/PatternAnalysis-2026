@@ -27,17 +27,21 @@ SPREAD_EDGES = np.arange(-10.5, 81.5)  # 1-tick bins centred on -10..80 ticks
 
 # ----------------------------------------------------------------------------- windows
 
-def to_raw(scaler, x: torch.Tensor, anchors: torch.Tensor, representation: str = "raw") -> np.ndarray:
-    """Scaled model windows [n, T, F] -> raw books, with prices on the tick grid and whole-share volumes.
+def to_books(features: torch.Tensor, anchors: torch.Tensor, representation: str = "raw") -> np.ndarray:
+    """Unscaled windows [n, T, F] -> raw books, with prices on the tick grid and whole-share volumes.
 
     anchors [n, F] are the real books each window starts from (used by the returns representation).
     """
-    n, t, f = x.shape
-    features = scaler.inverse_transform(x.reshape(-1, f)).reshape(n, t, f)
-    raw = decode(features, anchors.detach().cpu().double(), representation).numpy()
+    raw = decode(features.detach().cpu().double(), anchors.detach().cpu().double(), representation).numpy()
     raw[..., 0::2] = np.round(raw[..., 0::2] / TICK) * TICK
     raw[..., 1::2] = np.round(raw[..., 1::2])
     return raw
+
+
+def to_raw(scaler, x: torch.Tensor, anchors: torch.Tensor, representation: str = "raw") -> np.ndarray:
+    """Scaled model windows [n, T, F] -> raw books (see to_books)."""
+    n, t, f = x.shape
+    return to_books(scaler.inverse_transform(x.reshape(-1, f)).reshape(n, t, f), anchors, representation)
 
 
 # ----------------------------------------------------------------------------- book quantities

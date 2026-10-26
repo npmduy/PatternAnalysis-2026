@@ -6,8 +6,9 @@ adversarial training. Phase 3 is validated every --eval-every iterations against
 validation windows; the best checkpoint is then scored once on the held-out test hours.
 
 --representation picks how books are fed to the model (raw columns, or price log returns
-with log1p volumes). --lambda-valid adds a penalty on generated books that are crossed or
-have unordered price levels (0 = vanilla).
+with log1p volumes), and --scaling how features are squeezed into [0, 1] (min-max, or by
+rank in the training data). --lambda-valid adds a penalty on generated books that are
+crossed or have unordered price levels (0 = vanilla).
 
 Outputs in --out-dir: training_curves.png, val_metrics.csv, last.pt, best.pt,
 results.json, test_distributions.png and test_depth.png.
@@ -23,10 +24,10 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from dataset import REPRESENTATIONS, decode, load_data, max_log_volume
+from dataset import REPRESENTATIONS, SCALINGS, decode, load_data, max_log_volume
 from modules import TimeGAN
 from utils import (TICK, Evaluator, append_csv, describe, mid_price, plot_depth, plot_distributions,
-                   plot_training, print_table, to_raw)
+                   plot_training, print_table, to_books, to_raw)
 
 D_UPDATE_THRESHOLD = 0.15  # the discriminator only trains while its loss is above this
 
@@ -39,6 +40,7 @@ def parse_args():
     p.add_argument("--lr", type=float, default=1e-3)
     p.add_argument("--gamma", type=float, default=1.0)
     p.add_argument("--representation", choices=REPRESENTATIONS, default="raw")
+    p.add_argument("--scaling", choices=SCALINGS, default="minmax")
     p.add_argument("--lambda-valid", type=float, default=0.0,
                    help="weight of the penalty on crossed books and unordered price levels")
     p.add_argument("--eval-every", type=int, default=1_000, help="phase-3 iterations between validations")
@@ -145,10 +147,10 @@ def generate_raw(model: TimeGAN, scaler, anchors: torch.Tensor, seq_len: int, re
     model.train()
     return to_raw(scaler, x_hat.cpu(), anchors, representation)
 
-def real_windows(dataset, n: int, scaler, representation: str, generator: torch.Generator) -> np.ndarray:
-    """n random real windows from one split, in raw LOBSTER units."""
-    x, anchors = dataset.sample(n, generator)
-    return to_raw(scaler, x, anchors, representation)
+def real_windows(dataset, n: int, representation: str, generator: torch.Generator) -> np.ndarray:
+    """n random real windows from one split, in raw LOBSTER units (built without the scaler)."""
+    features, anchors = dataset.sample(n, generator, scaled=False)
+    return to_books(features, anchors, representation)
 
 @torch.no_grad()
 def recon_mse(model: TimeGAN, x: torch.Tensor, device) -> float:
@@ -182,18 +184,19 @@ def main():
     generator = torch.Generator().manual_seed(args.seed)  # for sampling real evaluation windows
     device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
     print(f"device: {device}" + (f" ({torch.cuda.get_device_name()})" if device.type == "cuda" else ""))
-    print(f"representation: {args.representation}, lambda_valid: {args.lambda_valid}")
+    print(f"representation: {args.representation}, scaling: {args.scaling}, lambda_valid: {args.lambda_valid}")
 
-    train_loader, val_loader, test_loader, scaler = load_data(args.seq_len, args.batch_size, args.representation)
+    train_loader, val_loader, test_loader, scaler = load_data(args.seq_len, args.batch_size, args.representation,
+                                                              args.scaling)
     train_set, val_set, test_set = train_loader.dataset, val_loader.dataset, test_loader.dataset
 
     # Fixed real windows that generated windows are scored against
     real = {
-        "train": real_windows(train_set, args.test_windows, scaler, args.representation, generator),
-        "val": real_windows(val_set, args.eval_windows, scaler, args.representation, generator),
-        "test": real_windows(test_set, args.test_windows, scaler, args.representation, generator),
+        "train": real_windows(train_set, args.test_windows, args.representation, generator),
+        "val": real_windows(val_set, args.eval_windows, args.representation, generator),
+        "test": real_windows(test_set, args.test_windows, args.representation, generator),
     }
-    log_max = max_log_volume(scaler, args.representation)
+    log_max = max_log_volume(train_set.features, args.representation)
     mid_ref = float(np.median(mid_price(real["train"])))
     val_eval = Evaluator(real["val"], log_max, mid_ref, seed=args.seed)
     test_eval = Evaluator(real["test"], log_max, mid_ref, seed=args.seed)

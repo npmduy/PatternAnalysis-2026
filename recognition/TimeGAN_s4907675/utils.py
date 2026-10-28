@@ -16,9 +16,8 @@ import numpy as np
 import torch
 from skimage.metrics import structural_similarity
 
-from dataset import decode
+from dataset import TICK, decode
 
-TICK = 100.0  # one cent in LOBSTER price units
 TARGET_KL = 0.1
 TARGET_SSIM = 0.6
 ACF_LAGS = 10

@@ -7,11 +7,15 @@ from torch.utils.data import DataLoader, Dataset
 
 DATA_DIR = Path(__file__).resolve().parent / "datasets/LOBSTER_SampleFile_AMZN_2012-06-21_10"
 OB_PATH = Path(DATA_DIR) / "AMZN_2012-06-21_34200000_57600000_orderbook_10.csv"
+TICK = 100.0  # one cent in LOBSTER price units (dollars x 10,000)
 
 # How an order book is presented to the model:
 #   raw     - the 40 LOBSTER columns as they are
 #   returns - log returns of the 20 prices and log1p of the 20 volumes, in the same column slots
-REPRESENTATIONS = ("raw", "returns")
+#   gaps    - mid-price log return, log spread, log gaps between neighbouring levels (in cents)
+#             and log1p of the 20 volumes; spreads and gaps are rebuilt as at least one cent, so
+#             decoded books can never be crossed or have unordered levels
+REPRESENTATIONS = ("raw", "returns", "gaps")
 
 # How features are squeezed into [0, 1] for the sigmoid outputs:
 #   minmax   - linear, from the training minimum to the training maximum
@@ -132,6 +136,17 @@ def encode(book, representation="raw"):
         features[:, 0::2] = torch.log(book[1:, 0::2] / book[:-1, 0::2])  # price log returns
         features[:, 1::2] = torch.log1p(book[1:, 1::2])                  # volumes
         return features, book[:-1]
+    if representation == "gaps":
+        ask_p, ask_v, bid_p, bid_v = book[:, 0::4], book[:, 1::4], book[:, 2::4], book[:, 3::4]
+        mid = (ask_p[:, 0] + bid_p[:, 0]) / 2
+        features = torch.cat([
+            torch.log(mid[1:] / mid[:-1])[:, None],                     # mid-price log return
+            torch.log((ask_p[1:, 0] - bid_p[1:, 0]) / TICK)[:, None],   # spread, cents
+            torch.log(torch.diff(ask_p[1:], dim=1) / TICK),             # 9 ask gaps, cents
+            torch.log(-torch.diff(bid_p[1:], dim=1) / TICK),            # 9 bid gaps, cents
+            torch.log1p(torch.cat([ask_v[1:], bid_v[1:]], dim=1)),      # 20 volumes
+        ], dim=1)
+        return features, book[:-1]
     raise ValueError(f"representation must be one of {REPRESENTATIONS}")
 
 def decode(features, anchor, representation="raw"):
@@ -141,12 +156,26 @@ def decode(features, anchor, representation="raw"):
     """
     if representation == "raw":
         return features
+    if representation == "gaps":
+        mid0 = (anchor[..., 0] + anchor[..., 2]) / 2
+        mid = mid0[..., None] * torch.exp(torch.cumsum(features[..., 0], dim=-1))  # [..., T]
+        half_spread = torch.exp(features[..., 1]).clamp_min(1) * TICK / 2
+        ask_gaps = torch.exp(features[..., 2:11]).clamp_min(1) * TICK               # [..., T, 9]
+        bid_gaps = torch.exp(features[..., 11:20]).clamp_min(1) * TICK
+        ask1, bid1 = (mid + half_spread)[..., None], (mid - half_spread)[..., None]
+        ask_p = torch.cat([ask1, ask1 + torch.cumsum(ask_gaps, dim=-1)], dim=-1)    # [..., T, 10]
+        bid_p = torch.cat([bid1, bid1 - torch.cumsum(bid_gaps, dim=-1)], dim=-1)
+        volumes = torch.expm1(features[..., 20:])
+        book = torch.stack([ask_p, volumes[..., :10], bid_p, volumes[..., 10:]], dim=-1)
+        return book.flatten(-2)  # LOBSTER order: ask price, ask size, bid price, bid size per level
     prices = anchor[..., None, 0::2] * torch.exp(torch.cumsum(features[..., 0::2], dim=-2))
     volumes = torch.expm1(features[..., 1::2])
     return torch.stack([prices, volumes], dim=-1).flatten(-2)  # back to price, volume, price, ...
 
 def max_log_volume(features, representation="raw"):
     """log1p of the largest volume in unscaled features, which fixes the colour scale of depth images."""
+    if representation == "gaps":
+        return features[:, 20:].max().item()
     top = features[:, 1::2].max().item()
     return top if representation == "returns" else math.log1p(top)
 

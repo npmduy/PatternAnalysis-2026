@@ -5,10 +5,11 @@ Three phases: embedder and recovery pretraining, supervisor training, and joint
 adversarial training. Phase 3 is validated every --eval-every iterations against real
 validation windows; the best checkpoint is then scored once on the held-out test hours.
 
---representation picks how books are fed to the model (raw columns, or price log returns
-with log1p volumes), and --scaling how features are squeezed into [0, 1] (min-max, or by
-rank in the training data). --lambda-valid adds a penalty on generated books that are
-crossed or have unordered price levels (0 = vanilla).
+--representation picks how books are fed to the model: raw columns, price log returns with
+log1p volumes, or gaps (mid-price return, spread and gaps between levels, which makes crossed
+books and unordered levels impossible). --scaling picks how features are squeezed into [0, 1]
+(min-max, or by percentile among the training values). --lambda-valid adds a penalty on
+generated books that are crossed or have unordered price levels (0 = vanilla).
 
 Outputs in --out-dir: training_curves.png, val_metrics.csv, last.pt, best.pt,
 results.json, test_distributions.png and test_depth.png.

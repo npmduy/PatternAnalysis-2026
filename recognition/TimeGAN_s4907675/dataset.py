@@ -8,6 +8,7 @@ from torch.utils.data import DataLoader, Dataset
 DATA_DIR = Path(__file__).resolve().parent / "datasets/LOBSTER_SampleFile_AMZN_2012-06-21_10"
 OB_PATH = Path(DATA_DIR) / "AMZN_2012-06-21_34200000_57600000_orderbook_10.csv"
 TICK = 100.0  # one cent in LOBSTER price units (dollars x 10,000)
+MAX_CENTS = 10_000  # cap on a rebuilt spread or gap ($100; the largest real one is $2.66)
 
 # How an order book is presented to the model:
 #   raw     - the 40 LOBSTER columns as they are
@@ -15,7 +16,9 @@ TICK = 100.0  # one cent in LOBSTER price units (dollars x 10,000)
 #   gaps    - mid-price log return, log spread, log gaps between neighbouring levels (in cents)
 #             and log1p of the 20 volumes; spreads and gaps are rebuilt as at least one cent, so
 #             decoded books can never be crossed or have unordered levels
-REPRESENTATIONS = ("raw", "returns", "gaps")
+#   gap_changes - as gaps, but the log spread and log gaps are changes from the previous step,
+#             so each window carries on from the spread and gaps of the real book it starts from
+REPRESENTATIONS = ("raw", "returns", "gaps", "gap_changes")
 
 # How features are squeezed into [0, 1] for the sigmoid outputs:
 #   minmax   - linear, from the training minimum to the training maximum
@@ -123,6 +126,30 @@ def make_scaler(scaling="minmax"):
         return QuantileScaler()
     raise ValueError(f"scaling must be one of {SCALINGS}")
 
+def book_structure(book):
+    """Mid price [...] and log spread + 9 ask gaps + 9 bid gaps in cents [..., 19] of books [..., 40]."""
+    ask_p, bid_p = book[..., 0::4], book[..., 2::4]
+    mid = (ask_p[..., 0] + bid_p[..., 0]) / 2
+    log_cents = torch.log(torch.cat([(ask_p[..., :1] - bid_p[..., :1]),
+                                     torch.diff(ask_p, dim=-1), -torch.diff(bid_p, dim=-1)], dim=-1) / TICK)
+    return mid, log_cents
+
+def assemble_book(mid, log_cents, log_volumes):
+    """Rebuild books [..., T, 40] from mid [..., T], log spread/gaps [..., T, 19] and log1p volumes [..., T, 20].
+
+    Spread and gaps are rebuilt as at least one cent, so the book can never be crossed or unordered.
+    They are also capped at MAX_CENTS, so prices stay small enough that a one-cent step is never
+    lost to floating-point rounding.
+    """
+    cents = torch.exp(log_cents.clamp(max=math.log(MAX_CENTS))).clamp_min(1) * TICK
+    half_spread, ask_gaps, bid_gaps = cents[..., 0] / 2, cents[..., 1:10], cents[..., 10:19]
+    ask1, bid1 = (mid + half_spread)[..., None], (mid - half_spread)[..., None]
+    ask_p = torch.cat([ask1, ask1 + torch.cumsum(ask_gaps, dim=-1)], dim=-1)    # [..., T, 10]
+    bid_p = torch.cat([bid1, bid1 - torch.cumsum(bid_gaps, dim=-1)], dim=-1)
+    volumes = torch.expm1(log_volumes)
+    book = torch.stack([ask_p, volumes[..., :10], bid_p, volumes[..., 10:]], dim=-1)
+    return book.flatten(-2)  # LOBSTER order: ask price, ask size, bid price, bid size per level
+
 def encode(book, representation="raw"):
     """Raw book [N, 40] -> (features, anchors), aligned row by row.
 
@@ -136,15 +163,13 @@ def encode(book, representation="raw"):
         features[:, 0::2] = torch.log(book[1:, 0::2] / book[:-1, 0::2])  # price log returns
         features[:, 1::2] = torch.log1p(book[1:, 1::2])                  # volumes
         return features, book[:-1]
-    if representation == "gaps":
-        ask_p, ask_v, bid_p, bid_v = book[:, 0::4], book[:, 1::4], book[:, 2::4], book[:, 3::4]
-        mid = (ask_p[:, 0] + bid_p[:, 0]) / 2
+    if representation in ("gaps", "gap_changes"):
+        mid, log_cents = book_structure(book)
+        structure = log_cents[1:] if representation == "gaps" else log_cents[1:] - log_cents[:-1]
         features = torch.cat([
-            torch.log(mid[1:] / mid[:-1])[:, None],                     # mid-price log return
-            torch.log((ask_p[1:, 0] - bid_p[1:, 0]) / TICK)[:, None],   # spread, cents
-            torch.log(torch.diff(ask_p[1:], dim=1) / TICK),             # 9 ask gaps, cents
-            torch.log(-torch.diff(bid_p[1:], dim=1) / TICK),            # 9 bid gaps, cents
-            torch.log1p(torch.cat([ask_v[1:], bid_v[1:]], dim=1)),      # 20 volumes
+            torch.log(mid[1:] / mid[:-1])[:, None],              # mid-price log return
+            structure,                                           # log spread and 18 log gaps (or their changes)
+            torch.log1p(torch.cat([book[1:, 1::4], book[1:, 3::4]], dim=1)),  # 20 volumes
         ], dim=1)
         return features, book[:-1]
     raise ValueError(f"representation must be one of {REPRESENTATIONS}")
@@ -156,25 +181,20 @@ def decode(features, anchor, representation="raw"):
     """
     if representation == "raw":
         return features
-    if representation == "gaps":
-        mid0 = (anchor[..., 0] + anchor[..., 2]) / 2
+    if representation in ("gaps", "gap_changes"):
+        mid0, log_cents0 = book_structure(anchor)
         mid = mid0[..., None] * torch.exp(torch.cumsum(features[..., 0], dim=-1))  # [..., T]
-        half_spread = torch.exp(features[..., 1]).clamp_min(1) * TICK / 2
-        ask_gaps = torch.exp(features[..., 2:11]).clamp_min(1) * TICK               # [..., T, 9]
-        bid_gaps = torch.exp(features[..., 11:20]).clamp_min(1) * TICK
-        ask1, bid1 = (mid + half_spread)[..., None], (mid - half_spread)[..., None]
-        ask_p = torch.cat([ask1, ask1 + torch.cumsum(ask_gaps, dim=-1)], dim=-1)    # [..., T, 10]
-        bid_p = torch.cat([bid1, bid1 - torch.cumsum(bid_gaps, dim=-1)], dim=-1)
-        volumes = torch.expm1(features[..., 20:])
-        book = torch.stack([ask_p, volumes[..., :10], bid_p, volumes[..., 10:]], dim=-1)
-        return book.flatten(-2)  # LOBSTER order: ask price, ask size, bid price, bid size per level
+        log_cents = features[..., 1:20]
+        if representation == "gap_changes":  # carry on from the starting book's spread and gaps
+            log_cents = log_cents0[..., None, :] + torch.cumsum(log_cents, dim=-2)
+        return assemble_book(mid, log_cents, features[..., 20:])
     prices = anchor[..., None, 0::2] * torch.exp(torch.cumsum(features[..., 0::2], dim=-2))
     volumes = torch.expm1(features[..., 1::2])
     return torch.stack([prices, volumes], dim=-1).flatten(-2)  # back to price, volume, price, ...
 
 def max_log_volume(features, representation="raw"):
     """log1p of the largest volume in unscaled features, which fixes the colour scale of depth images."""
-    if representation == "gaps":
+    if representation in ("gaps", "gap_changes"):
         return features[:, 20:].max().item()
     top = features[:, 1::2].max().item()
     return top if representation == "returns" else math.log1p(top)

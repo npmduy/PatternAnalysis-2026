@@ -6,8 +6,9 @@ adversarial training. Phase 3 is validated every --eval-every iterations against
 validation windows; the best checkpoint is then scored once on the held-out test hours.
 
 --representation picks how books are fed to the model: raw columns, price log returns with
-log1p volumes, or gaps (mid-price return, spread and gaps between levels, which makes crossed
-books and unordered levels impossible). --scaling picks how features are squeezed into [0, 1]
+log1p volumes, gaps (mid-price return, spread and gaps between levels, which makes crossed
+books and unordered levels impossible), or gap_changes (as gaps, but spread and gaps change
+from those of the real book each window starts from). --scaling picks how features are squeezed into [0, 1]
 (min-max, or by percentile among the training values). --lambda-valid adds a penalty on
 generated books that are crossed or have unordered price levels (0 = vanilla).
 

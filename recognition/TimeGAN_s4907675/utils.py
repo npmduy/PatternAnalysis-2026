@@ -32,7 +32,9 @@ def to_books(features: torch.Tensor, anchors: torch.Tensor, representation: str 
     anchors [n, F] are the real books each window starts from (used by the returns representation).
     """
     raw = decode(features.detach().cpu().double(), anchors.detach().cpu().double(), representation).numpy()
-    raw[..., 0::2] = np.round(raw[..., 0::2] / TICK) * TICK
+    # Round halves up rather than to even (np.round): with round-half-to-even, two levels one cent
+    # apart that both sit on a half cent (101.5, 102.5) would round to the same price.
+    raw[..., 0::2] = np.floor(raw[..., 0::2] / TICK + 0.5) * TICK
     raw[..., 1::2] = np.round(raw[..., 1::2])
     return raw
 

@@ -1,5 +1,6 @@
 """
-Simulate held-out market periods with a trained TimeGAN and audit the generated order books.
+Simulate held-out market periods with a trained model (TimeGAN or the RGAN baseline) and audit the
+generated order books.
 
 The test hours are cut into --periods consecutive simulation periods. In each period, --windows
 synthetic windows are generated, each starting from a real book of that period, and scored against
@@ -23,8 +24,7 @@ from matplotlib.animation import FuncAnimation, PillowWriter
 import torch
 
 from dataset import DATA_DIR, TICK, load_data, make_scaler, max_log_volume
-from modules import TimeGAN
-from train import generate_raw, real_windows
+from train import MODELS, generate_raw, real_windows
 from utils import Evaluator, append_csv, describe, mid_price, print_table, spread_ticks, split_book, to_books
 
 MESSAGE_PATH = DATA_DIR / "AMZN_2012-06-21_34200000_57600000_message_10.csv"
@@ -32,8 +32,8 @@ MESSAGE_PATH = DATA_DIR / "AMZN_2012-06-21_34200000_57600000_message_10.csv"
 
 def parse_args():
     here = Path(__file__).resolve().parent
-    p = argparse.ArgumentParser(description="Audit a trained TimeGAN on consecutive periods of the test hours")
-    p.add_argument("--checkpoint", type=Path, default=here / "outputs/e3b_gap_changes/best.pt")
+    p = argparse.ArgumentParser(description="Audit a trained model on consecutive periods of the test hours")
+    p.add_argument("--checkpoint", type=Path, default=here / "outputs/e3b_gap_changes/last.pt")
     p.add_argument("--periods", type=int, default=5, help="number of consecutive simulation periods")
     p.add_argument("--windows", type=int, default=1_000, help="synthetic windows generated per period")
     p.add_argument("--depth-cents", type=int, default=35, help="price range around the mid in plots, in cents")
@@ -67,16 +67,24 @@ def depth_surface(w: np.ndarray, base: float, log_max: float, cents: int) -> np.
     return grid
 
 
-def plot_heatmaps(pairs: list, log_max: float, cents: int, path: Path) -> None:
+def centres(anchor: np.ndarray, synth: np.ndarray, anchored: bool) -> tuple:
+    """Price (in cents) each panel is centred on: the shared starting book's mid-price, or for a model
+    whose windows do not start from the real book (raw prices), the synthetic window's own first mid-price."""
+    real_base = np.floor(mid_price(anchor) / TICK + 0.5)
+    return real_base, real_base if anchored else np.floor(mid_price(synth[:1])[0] / TICK + 0.5)
+
+
+def plot_heatmaps(pairs: list, log_max: float, cents: int, path: Path, anchored: bool = True) -> None:
     """One row per period: a real window and the synthetic window grown from the same starting book."""
+    start = ("The synthetic window starts from the same real book." if anchored else
+             "This model does not start from the real book, so its panels are centred on its own first mid-price.")
     fig = plt.figure(figsize=(11, 3.4 * len(pairs)), layout="constrained")
     fig.suptitle("Depth surfaces: asks red, bids blue, darker = more volume (log1p); black line = mid-price.\n"
-                 f"The synthetic window starts from the same real book. Levels beyond ±{cents} cents are not shown.",
-                 fontsize=10)
+                 f"{start} Levels beyond ±{cents} cents are not shown.", fontsize=10)
     for subfig, (title, anchor, real, synth) in zip(fig.subfigures(len(pairs), 1), pairs):
         subfig.suptitle(title, fontsize=10, fontweight="bold")
-        base = np.floor(mid_price(anchor) / TICK + 0.5)  # mid of the shared starting book, to the nearest cent
-        for ax, (label, w) in zip(subfig.subplots(1, 2), (("real", real), ("synthetic", synth))):
+        panels = zip(subfig.subplots(1, 2), ("real", "synthetic"), (real, synth), centres(anchor, synth, anchored))
+        for ax, label, w, base in panels:
             ax.imshow(depth_surface(w, base, log_max, cents), aspect="auto", origin="lower", cmap="RdBu_r",
                       vmin=-1, vmax=1, extent=(-0.5, len(w) - 0.5, -cents - 0.5, cents + 0.5))
             ax.plot(np.arange(len(w)), mid_price(w) / TICK - base, color="black", linewidth=1)
@@ -84,21 +92,21 @@ def plot_heatmaps(pairs: list, log_max: float, cents: int, path: Path) -> None:
             moves = int((np.diff(mid_price(w)) != 0).sum())
             ax.set_title(f"{label}: spread {spread.min():.0f}-{spread.max():.0f} cents, mid moves {moves}/{len(w) - 1}, "
                          f"crossed {int((spread <= 0).sum())}", fontsize=8)
-            ax.set(xlabel="event step", ylabel="cents from starting mid")
+            ax.set(xlabel="event step", ylabel="cents from starting mid", ylim=(-cents - 0.5, cents + 0.5))
     fig.savefig(path, dpi=110)
     plt.close(fig)
 
 
 def animate_book(title: str, anchor: np.ndarray, real: np.ndarray, synth: np.ndarray, cents: int,
-                 path: Path, fps: float) -> None:
+                 path: Path, fps: float, anchored: bool = True) -> None:
     """GIF of the book at each event step: volume at each price, real and synthetic side by side."""
-    base = np.floor(mid_price(anchor) / TICK + 0.5) * TICK / 1e4  # starting mid in dollars, to the nearest cent
+    bases = [b * TICK / 1e4 for b in centres(anchor, synth, anchored)]  # in dollars
     _, ask_v, _, bid_v = split_book(np.stack([real, synth]))
     top = 1.1 * max(ask_v.max(), bid_v.max())
     fig, axes = plt.subplots(1, 2, figsize=(12, 4.2), sharey=True)
 
     def draw(t):
-        for ax, (label, w) in zip(axes, (("real", real), ("synthetic", synth))):
+        for ax, label, w, base in zip(axes, ("real", "synthetic"), (real, synth), bases):
             ax.cla()
             ask_p, ask_v, bid_p, bid_v = split_book(w[t])
             ask_p, bid_p = ask_p / 1e4, bid_p / 1e4  # dollars
@@ -114,7 +122,8 @@ def animate_book(title: str, anchor: np.ndarray, real: np.ndarray, synth: np.nda
             ax.legend(fontsize=8, loc="upper right")
         axes[0].set_ylabel("Volume")
 
-    fig.suptitle(f"{title}: both windows start from the same real book", fontsize=11)
+    fig.suptitle(f"{title}: " + ("both windows start from the same real book" if anchored else
+                                  "the synthetic window does not start from the real book"), fontsize=11)
     draw(0)
     fig.tight_layout()  # after drawing a frame, so the axis labels fit
     FuncAnimation(fig, draw, frames=len(real)).save(path, writer=PillowWriter(fps=fps))
@@ -149,12 +158,13 @@ def main():
     config = checkpoint["config"]
     representation, scaling = config["representation"], config.get("scaling", "minmax")
     seq_len = int(config["seq_len"])
-    print(f"checkpoint: {args.checkpoint} ({representation}, {scaling}), device: {device}")
+    model_name = config.get("model", "timegan")
+    print(f"checkpoint: {args.checkpoint} ({model_name}, {representation}, {scaling}), device: {device}")
 
     train_loader, _, test_loader, _ = load_data(seq_len, representation=representation, scaling=scaling)
     train_set, test_set = train_loader.dataset, test_loader.dataset
     scaler = make_scaler(scaling).load_state_dict(checkpoint["scaler"])
-    model = TimeGAN(test_set.series.size(-1)).to(device)
+    model = MODELS[model_name](test_set.series.size(-1)).to(device)
     model.load_state_dict(checkpoint["model"])
 
     # The same depth colour scale and return bins as in training
@@ -189,12 +199,15 @@ def main():
         print_table(f"Period {p} ({span}), {args.windows} windows",
                     {"real": row["real"], "synthetic": row["synthetic"], "real, rest of test (reference)": row["reference"]})
         for source in ("real", "synthetic", "reference"):
-            append_csv(args.out_dir / "period_metrics.csv", {"period": p, "time": span, "source": source, **row[source]})
+            # Real rows have no distance scores; leave those cells empty so every row has the same columns
+            metrics = {k: row[source].get(k, "") for k in row["synthetic"]}
+            append_csv(args.out_dir / "period_metrics.csv", {"period": p, "time": span, "source": source, **metrics})
 
-    plot_heatmaps(pairs, log_max, args.depth_cents, args.out_dir / "heatmaps.png")
+    anchored = representation != "raw"  # raw windows do not start from the real book
+    plot_heatmaps(pairs, log_max, args.depth_cents, args.out_dir / "heatmaps.png", anchored)
     if args.gif:
         for p, pair in enumerate(pairs, start=1):
-            animate_book(*pair, args.depth_cents, args.out_dir / f"book_period{p}.gif", args.gif_fps)
+            animate_book(*pair, args.depth_cents, args.out_dir / f"book_period{p}.gif", args.gif_fps, anchored)
     print_table("Summary (also in period_summary.csv)",
                 {f"period {r['period']}": {k: v for k, v in r.items() if k not in ("period", "time")} for r in summaries})
     print(f"\noutputs in {args.out_dir}")

@@ -68,7 +68,13 @@ It writes `period_summary.csv` (one row per period), `period_metrics.csv` (every
 
 ## Model Architecture
 
-TimeGAN (Yoon et al., 2019) is a GAN for time series. Instead of generating LOB windows directly, it learns a latent space with an autoencoder (embedder and recovery) and plays the adversarial game in that space, with an extra supervised loss that teaches the generator how each step follows from the previous ones. A batch of scaled LOB windows lives in the data space $\mathcal{X} = [0, 1]^{B \times T \times d}$, with $B = 128$ windows, $T = 24$ events per window and $d = 40$ features per event. The latent space is $\mathcal{H} = [0, 1]^{B \times T \times H}$ with $H = 24$. Each network is a GRU (3 layers, 2 for the supervisor) followed by a linear layer, with 55,529 parameters in total. TimeGAN has 5 networks:
+TimeGAN (Yoon et al., 2019) is a GAN for time series. Instead of generating LOB windows directly, it learns a latent space with an autoencoder (embedder and recovery) and plays the adversarial game in that space, with an extra supervised loss that teaches the generator how each step follows from the previous ones. A batch of scaled LOB windows lives in the data space $\mathcal{X} = [0, 1]^{B \times T \times d}$, with $B = 128$ windows, $T = 24$ events per window and $d = 40$ features per event. The latent space is $\mathcal{H} = [0, 1]^{B \times T \times H}$ with $H = 24$. Each network is a GRU (3 layers, 2 for the supervisor) followed by a linear layer, with 55,529 parameters in total.
+
+![TimeGAN block diagram and training scheme](assets/timegan.png)
+
+*TimeGAN's block diagram and training scheme, from Yoon et al. (2019). In the notation below: the networks $e$, $r$, $g$ and $d$ are $E$, $R$, $G$ and $D$; our data has no static features, so $\boldsymbol{s}$, $\boldsymbol{h}_\mathcal{S}$ and $\boldsymbol{z}_\mathcal{S}$ are dropped; the reference code splits the generator into $G$ and a separate supervisor $S$, so $\hat{\boldsymbol{h}} = S(G(\boldsymbol{z}))$; and the unsupervised loss $\mathcal{L}_U$ is the pair of adversarial terms in $\mathcal{L}_G$ and $\mathcal{L}_D$.*
+
+TimeGAN has 5 networks:
 - Embedder $E: \mathcal{X} \to \mathcal{H}$: maps a LOB window $\boldsymbol{x}$ to a latent sequence $\boldsymbol{h} = E(\boldsymbol{x})$.
 - Recovery $R: \mathcal{H} \to \mathcal{X}$: maps a latent sequence $\boldsymbol{h}$ back to a LOB window $\tilde{\boldsymbol{x}} = R(\boldsymbol{h})$.
 - Generator $G$: maps a noise sequence $\boldsymbol{z} \in [0, 1]^{B \times T \times d}$, drawn uniformly, to a latent sequence $\hat{\boldsymbol{e}} = G(\boldsymbol{z}) \in \mathcal{H}$.

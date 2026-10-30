@@ -251,6 +251,43 @@ def plot_training(history: dict, val_rows: list, reference: dict, path: Path) ->
     plt.close(fig)
 
 
+def plot_experiments(runs: dict, path: Path) -> None:
+    """Compare training runs: the loss of each phase and the validation metrics, one line per run.
+
+    runs maps a label to an output folder written by train.py (last.pt and val_metrics.csv).
+    """
+    fig, axes = plt.subplots(2, 3, figsize=(16, 8.5))
+    for label, folder in runs.items():
+        folder = Path(folder)
+        history = torch.load(folder / "last.pt", map_location="cpu")["history"]
+        with (folder / "val_metrics.csv").open() as f:
+            val = list(csv.DictReader(f))
+        for ax, key in zip(axes[0], ("recon", "supervised", "d")):
+            ax.plot(*_smooth(history[key], 200), linewidth=1.2, label=label)
+        iters = [int(row["iter"]) for row in val]
+        for ax, key in zip(axes[1], ("kl_returns", "kl_spread", "any_violation")):
+            ax.plot(iters, [float(row[key]) for row in val], marker="o", ms=3, label=label)
+
+    axes[0, 0].set(title="Phase 1: reconstruction MSE", yscale="log")
+    axes[0, 1].set(title="Phase 2: supervised loss", yscale="log")
+    axes[0, 2].set(title="Phase 3: discriminator loss")
+    axes[0, 2].axhline(3 * np.log(2), color="grey", linestyle=":", linewidth=1, label="guessing (3 ln 2)")
+    axes[1, 0].set(title="Validation: KL of mid-price returns", yscale="log")
+    axes[1, 1].set(title="Validation: KL of spread", yscale="log")
+    axes[1, 2].set(title="Validation: share of invalid snapshots")
+    for ax in axes[1, :2]:
+        ax.axhline(TARGET_KL, color="red", linestyle="--", linewidth=1, label="target 0.1")
+    for ax in axes[0]:
+        ax.set_xlabel("iteration in phase (moving average of 200)")
+    for ax in axes[1]:
+        ax.set_xlabel("phase-3 iteration")
+    for ax in axes.flat:
+        ax.legend(fontsize=8)
+    fig.tight_layout()
+    fig.savefig(path, dpi=110)
+    plt.close(fig)
+
+
 def plot_distributions(real: np.ndarray, train: np.ndarray, synth: np.ndarray, return_unit: float, path: Path) -> None:
     """Spread, mid-price moves, volatility clustering and VWAP: real test vs real train vs synthetic."""
     fig, axes = plt.subplots(2, 2, figsize=(13, 9))

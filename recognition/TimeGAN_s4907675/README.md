@@ -91,17 +91,17 @@ TimeGAN has 3 training phases. The loss weights, the discriminator threshold and
 3. Joint: all five networks are trained together. Each iteration takes two generator and embedder steps, then one discriminator step.
    1. Generator: from a noise sequence $\boldsymbol{z}$, we generate a LOB window: $\boldsymbol{z} \to \hat{\boldsymbol{e}} := G(\boldsymbol{z}) \to \hat{\boldsymbol{h}} := S(\hat{\boldsymbol{e}}) \to \hat{\boldsymbol{x}} := R(\hat{\boldsymbol{h}})$. We minimise
 
-      $$\mathcal{L}_G = \operatorname{BCE}\big(D(\hat{\boldsymbol{h}}), 1\big) + \gamma\,\operatorname{BCE}\big(D(\hat{\boldsymbol{e}}), 1\big) + 100\sqrt{\mathcal{L}_S} + 100\,\mathcal{L}_V,$$
+      $$\mathcal{L}_G = \mathrm{BCE}\big(D(\hat{\boldsymbol{h}}), 1\big) + \gamma\,\mathrm{BCE}\big(D(\hat{\boldsymbol{e}}), 1\big) + 100\sqrt{\mathcal{L}_S} + 100\,\mathcal{L}_V,$$
 
-      where $\operatorname{BCE}(\boldsymbol{y}, c)$ is the binary cross-entropy between the discriminator's scores $\boldsymbol{y}$ and the label vector $c\,\mathbf{1} = (c, c, \dots, c)$ of the same shape ($c = 1$ for real, $0$ for fake), and $\mathcal{L}_V$ matches the mean $\mu$ and standard deviation $\sigma$ of $\hat{\boldsymbol{x}}$ and $\boldsymbol{x}$ over the batch, for each time step $t$ and feature $f$:
+      where $\mathrm{BCE}(\boldsymbol{y}, c)$ is the binary cross-entropy between the discriminator's scores $\boldsymbol{y}$ and the label vector $c\,\mathbf{1} = (c, c, \dots, c)$ of the same shape ($c = 1$ for real, $0$ for fake), and $\mathcal{L}_V$ matches the mean $\mu$ and standard deviation $\sigma$ of $\hat{\boldsymbol{x}}$ and $\boldsymbol{x}$ over the batch, for each time step $t$ and feature $f$:
 
-      $$\mathcal{L}_V = \operatorname{mean}_{t,f}\,\lvert\hat\sigma_{t,f} - \sigma_{t,f}\rvert + \operatorname{mean}_{t,f}\,\lvert\hat\mu_{t,f} - \mu_{t,f}\rvert.$$
+      $$\mathcal{L}_V = \mathrm{mean}_{t,f}\,\lvert\hat\sigma_{t,f} - \sigma_{t,f}\rvert + \mathrm{mean}_{t,f}\,\lvert\hat\mu_{t,f} - \mu_{t,f}\rvert.$$
 
       We update the generator and the supervisor.
    2. Embedder: from the forward pass in step 1, we also aim to minimise $\mathcal{L}_E = 10\sqrt{\mathcal{L}_R} + 0.1\,\mathcal{L}_S$ and update the embedder and recovery, so the latent space stays both reconstructable and predictable.
    3. Discriminator: on a new real batch, we minimise
 
-      $$\mathcal{L}_D = \operatorname{BCE}\big(D(\boldsymbol{h}), 1\big) + \operatorname{BCE}\big(D(\hat{\boldsymbol{h}}), 0\big) + \gamma\,\operatorname{BCE}\big(D(\hat{\boldsymbol{e}}), 0\big),$$
+      $$\mathcal{L}_D = \mathrm{BCE}\big(D(\boldsymbol{h}), 1\big) + \mathrm{BCE}\big(D(\hat{\boldsymbol{h}}), 0\big) + \gamma\,\mathrm{BCE}\big(D(\hat{\boldsymbol{e}}), 0\big),$$
 
       and update the discriminator only when $\mathcal{L}_D > 0.15$, so that it does not overpower the generator.
 
@@ -197,7 +197,7 @@ Analysis:
 
 We use the same transformation as Experiment 2 and add a validity penalty to the generator loss. Each generated window is decoded back into prices (in cents), and the penalty charges every crossed book and every pair of neighbouring levels less than one cent apart:
 $$
-\mathcal{L}_P = \operatorname{mean}_{t}\Big[\max(0,\ \mathrm{bid}_t^1 - \mathrm{ask}_t^1 + 1) + \sum_{k=1}^{9}\max(0,\ \mathrm{ask}_t^k - \mathrm{ask}_t^{k+1} + 1) + \sum_{k=1}^{9}\max(0,\ \mathrm{bid}_t^{k+1} - \mathrm{bid}_t^k + 1)\Big],
+\mathcal{L}_P = \mathrm{mean}_{t}\Big[\max(0,\ \mathrm{bid}_t^1 - \mathrm{ask}_t^1 + 1) + \sum_{k=1}^{9}\max(0,\ \mathrm{ask}_t^k - \mathrm{ask}_t^{k+1} + 1) + \sum_{k=1}^{9}\max(0,\ \mathrm{bid}_t^{k+1} - \mathrm{bid}_t^k + 1)\Big],
 $$
 averaged over the batch. A valid book has $\mathcal{L}_P = 0$. The generator now minimises $\mathcal{L}_G + \lambda\,\mathcal{L}_P$ with $\lambda = 1$.
 

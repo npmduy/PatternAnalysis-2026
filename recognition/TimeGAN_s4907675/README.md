@@ -6,7 +6,7 @@ Project 2.7 (Hard Difficulty)
 
 ## Project Goal
 
-This project aims to generate realistic limit order books (LOBs) to support the evaluation of trading algorithms, execution strategies and risk systems. Hence, the synthetic LOBs must follow market microstructure invariants. Overall, our targets for the synthetic LOBs are:
+In real life, real limit order books (LOBs) are expensive yet essential in the evaluation of trading algorithms, execution strategies and risk systems. This project aims to solve that problem by generating realistic LOBs. Hence, the synthetic LOBs must follow market microstructure invariants. Overall, our targets for the synthetic LOBs are:
 - Valid spread
 - Monotonic price ladders across levels
 - Non-negative liquidity depth

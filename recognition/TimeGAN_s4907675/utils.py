@@ -53,11 +53,13 @@ def split_book(w: np.ndarray):
 
 
 def spread_ticks(w: np.ndarray) -> np.ndarray:
+    """Best ask minus best bid at every snapshot, in cents."""
     ask_p, _, bid_p, _ = split_book(w)
     return (ask_p[..., 0] - bid_p[..., 0]) / TICK
 
 
 def mid_price(w: np.ndarray) -> np.ndarray:
+    """Average of the best ask and best bid at every snapshot, in LOBSTER price units."""
     ask_p, _, bid_p, _ = split_book(w)
     return (ask_p[..., 0] + bid_p[..., 0]) / 2
 
@@ -81,7 +83,8 @@ def log_returns(price: np.ndarray) -> np.ndarray:
 def violations(w: np.ndarray) -> dict:
     """Order-book rules broken per snapshot: crossed or locked book, unordered price ladder, negative volume."""
     ask_p, ask_v, bid_p, bid_v = split_book(w)
-    crossed = bid_p[..., 0] >= ask_p[..., 0]
+    crossed = bid_p[..., 0] >= ask_p[..., 0]  # a locked book (equal prices) counts as crossed too
+    # Ask prices must strictly rise with depth and bid prices strictly fall
     ladder = (np.diff(ask_p, axis=-1) <= 0).any(-1) | (np.diff(bid_p, axis=-1) >= 0).any(-1)
     negative = (ask_v < 0).any(-1) | (bid_v < 0).any(-1)
     return {
@@ -97,6 +100,7 @@ def kl_divergence(real: np.ndarray, other: np.ndarray, edges: np.ndarray, eps: f
     """KL(real || other) between histograms on fixed bins; values beyond the edges go to the end bins."""
     real = np.clip(np.ravel(real), edges[0], edges[-1])
     other = np.clip(np.ravel(other), edges[0], edges[-1])
+    # eps keeps empty bins from giving log(0) or a division by zero
     p = np.histogram(real, edges)[0] / real.size + eps
     q = np.histogram(other, edges)[0] / other.size + eps
     p, q = p / p.sum(), q / q.sum()
@@ -109,13 +113,14 @@ def acf_abs(r: np.ndarray, lags: int = ACF_LAGS) -> np.ndarray:
     var = (a ** 2).mean()
     if var == 0:
         return np.zeros(lags)
+    # a[:, :-k] * a[:, k:] pairs each step with the step k later, inside the same window
     return np.array([(a[:, :-k] * a[:, k:]).mean() / var for k in range(1, lags + 1)])
 
 
 def depth_images(w: np.ndarray, log_max: float) -> np.ndarray:
     """[n, 20, T] images of log1p(volume): rows ask10..ask1 then bid1..bid10, scaled to [0, 1]."""
     _, ask_v, _, bid_v = split_book(w)
-    img = np.concatenate([ask_v[..., ::-1], bid_v], axis=-1)
+    img = np.concatenate([ask_v[..., ::-1], bid_v], axis=-1)  # asks reversed: deepest ask on top
     img = np.log1p(np.clip(img, 0, None)) / log_max
     return np.clip(img, 0, 1).transpose(0, 2, 1)
 
@@ -136,6 +141,7 @@ def describe(w: np.ndarray) -> dict:
         "vwap_bid_std_usd": bid_vwap.std() / 1e4,
         "zero_return_share": (r == 0).mean(),
         "return_std_bp": std * 1e4,
+        # Fourth standardised moment minus 3: 0 for a normal distribution, large for fat tails
         "excess_kurtosis": ((r - r.mean()) ** 4).mean() / std ** 4 - 3 if std > 0 else np.nan,
         "acf_abs_r_lag1": acf_abs(r)[0],
         "acf_abs_vwap_r_lag1": acf_abs(log_returns((ask_vwap + bid_vwap) / 2))[0],
@@ -147,6 +153,11 @@ class Evaluator:
     """Scores sets of windows against one fixed sample of real windows, all in raw units."""
 
     def __init__(self, real: np.ndarray, log_max: float, mid_ref: float, seed: int = 0, ssim_pairs: int = 300):
+        """Precompute the statistics of the real sample.
+
+        real: the real windows to compare against; log_max: depth-image colour scale;
+        mid_ref: a typical mid-price, which sets the width of a half-cent return bin.
+        """
         self.log_max = log_max
         self.return_unit = float(np.log((mid_ref + TICK / 2) / mid_ref))  # log return of a half-tick mid move
         self.return_edges = (np.arange(-40, 42) - 0.5) * self.return_unit  # bins centred on 0, ±1 .. ±40 half-ticks
@@ -156,12 +167,14 @@ class Evaluator:
         self.returns = log_returns(mid_price(real))
         self.images = depth_images(real, log_max)
         self.acf = acf_abs(self.returns)
+        # Standard deviation of each of the 20 volume columns, over all windows and steps
         self.volume_std = real[..., 1::2].reshape(-1, real.shape[-1] // 2).std(0)
 
     def __call__(self, w: np.ndarray) -> dict:
         """All metrics for windows w: their own statistics plus distances to the real sample."""
         r = log_returns(mid_price(w))
         images = depth_images(w, self.log_max)
+        # Random (real, synthetic) pairs for the pairwise SSIM
         i = self.rng.integers(0, len(self.images), self.ssim_pairs)
         j = self.rng.integers(0, len(images), self.ssim_pairs)
         volume_std = w[..., 1::2].reshape(-1, w.shape[-1] // 2).std(0)
@@ -180,6 +193,7 @@ class Evaluator:
 # ----------------------------------------------------------------------------- logging
 
 def append_csv(path: Path, row: dict) -> None:
+    """Append one row to a CSV file, writing the header first if the file is new."""
     new = not path.exists()
     with path.open("a", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=list(row))
@@ -219,6 +233,7 @@ def plot_training(history: dict, val_rows: list, reference: dict, path: Path, d_
     fig, axes = plt.subplots(3, 3, figsize=(16, 12))
 
     def losses(ax, title, keys, log=False):
+        """Raw loss curves (faint) with their moving averages on top."""
         for k in keys:
             if history.get(k):
                 raw, = ax.plot(history[k], linewidth=0.4, alpha=0.3)
@@ -226,6 +241,7 @@ def plot_training(history: dict, val_rows: list, reference: dict, path: Path, d_
         ax.set(title=title, xlabel="iteration in phase", yscale="log" if log else "linear")
 
     def validation(ax, title, keys, target=None, log=False, show_reference=False):
+        """Validation metrics over phase-3 iterations, with the target and the real-data reference."""
         for k in keys:
             line, = ax.plot([r["iter"] for r in val_rows], [r[k] for r in val_rows], marker="o", ms=3, label=k)
             if show_reference:

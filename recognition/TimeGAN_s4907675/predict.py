@@ -1,6 +1,5 @@
 """
-Simulate held-out market periods with a trained model (TimeGAN or the RGAN baseline) and audit the
-generated order books.
+Simulate test periods with a trained model (TimeGAN or the RGAN baseline) and audit the books.
 
 The test hours are cut into --periods consecutive simulation periods. In each period, --windows
 synthetic windows are generated, each starting from a real book of that period, and scored against
@@ -31,6 +30,7 @@ MESSAGE_PATH = DATA_DIR / "AMZN_2012-06-21_34200000_57600000_message_10.csv"
 
 
 def parse_args():
+    """Command-line options; run `python predict.py --help` for the list."""
     here = Path(__file__).resolve().parent
     p = argparse.ArgumentParser(description="Audit a trained model on consecutive periods of the test hours")
     p.add_argument("--checkpoint", type=Path, default=here / "outputs/e3b_gap_changes/last.pt")
@@ -58,19 +58,23 @@ def depth_surface(w: np.ndarray, base: float, log_max: float, cents: int) -> np.
     """
     ask_p, ask_v, bid_p, bid_v = split_book(w)
     grid = np.zeros((2 * cents + 1, len(w)))
-    steps = np.broadcast_to(np.arange(len(w))[:, None], ask_p.shape)
+    steps = np.broadcast_to(np.arange(len(w))[:, None], ask_p.shape)  # the event step of every price
     for prices, volumes, sign in ((ask_p, ask_v, 1), (bid_p, bid_v, -1)):
         rows = np.rint(prices / TICK - base).astype(int) + cents
         inside = (rows >= 0) & (rows <= 2 * cents)
         depth = np.log1p(np.clip(volumes, 0, None)) / log_max
+        # add.at accumulates if two levels land in the same cell (only possible in a crossed book)
         np.add.at(grid, (rows[inside], steps[inside]), sign * depth[inside])
     return grid
 
 
 def centres(anchor: np.ndarray, synth: np.ndarray, anchored: bool) -> tuple:
-    """Price (in cents) each panel is centred on: the shared starting book's mid-price, or for a model
-    whose windows do not start from the real book (raw prices), the synthetic window's own first mid-price."""
-    real_base = np.floor(mid_price(anchor) / TICK + 0.5)
+    """Price, in cents, that the real and the synthetic panel are centred on.
+
+    Both use the shared starting book's mid-price, except for a model whose windows do not start from
+    the real book (raw prices): its panel uses the synthetic window's own first mid-price.
+    """
+    real_base = np.floor(mid_price(anchor) / TICK + 0.5)  # rounded half up to a whole cent
     return real_base, real_base if anchored else np.floor(mid_price(synth[:1])[0] / TICK + 0.5)
 
 
@@ -106,6 +110,7 @@ def animate_book(title: str, anchor: np.ndarray, real: np.ndarray, synth: np.nda
     fig, axes = plt.subplots(1, 2, figsize=(12, 4.2), sharey=True)
 
     def draw(t):
+        """Draw frame t: the real and the synthetic book at event step t."""
         for ax, label, w, base in zip(axes, ("real", "synthetic"), (real, synth), bases):
             ax.cla()
             ask_p, ask_v, bid_p, bid_v = split_book(w[t])
@@ -147,6 +152,7 @@ def summary(row: dict) -> dict:
 
 
 def main():
+    """Score a checkpoint on consecutive periods of the test hours and save the tables and figures."""
     args = parse_args()
     args.out_dir.mkdir(parents=True, exist_ok=True)
     for name in ("period_metrics.csv", "period_summary.csv"):
@@ -176,17 +182,19 @@ def main():
     times = np.loadtxt(MESSAGE_PATH, delimiter=",", usecols=0)
     first_row = len(times) - len(test_set.features)
 
+    # Window start rows of each period: the test hours cut into equal consecutive parts
     bounds = np.linspace(0, len(test_set), args.periods + 1).astype(int)
     summaries, pairs = [], []
     for p, (lo, hi) in enumerate(zip(bounds[:-1], bounds[1:]), start=1):
         span = f"{clock(times[first_row + lo])}-{clock(times[first_row + hi - 1])}"  # when its windows start
         start = torch.randint(lo, hi, (args.windows,), generator=generator)
+        # Reference: real windows from the other periods, scored against this period like the model
         rest = torch.cat([torch.arange(0, lo), torch.arange(hi, len(test_set))])
         rest = rest[torch.randperm(len(rest), generator=generator)[:args.windows]]
 
         features, anchors = test_set.windows(start, scaled=False)
         real = to_books(features, anchors, representation)
-        torch.manual_seed(args.seed + p)
+        torch.manual_seed(args.seed + p)  # different noise in each period, reproducible across runs
         synth = generate_raw(model, scaler, anchors, seq_len, representation, device)  # same starting books
         reference = to_books(*test_set.windows(rest, scaled=False), representation)
 

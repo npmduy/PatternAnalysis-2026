@@ -1,5 +1,9 @@
 # Time-Series Generation: Limit Order Book and Market Simulation
 
+Author: Pham Minh Duy Nguyen
+Student Number: 49076750
+Project 2.7 (Hard Difficulty)
+
 ## Project Goal
 
 This project aims to generate realistic limit order books (LOBs) to support the evaluation of trading algorithms, execution strategies and risk systems. Hence, the synthetic LOBs must follow market microstructure invariants. Overall, our targets for the synthetic LOBs are:

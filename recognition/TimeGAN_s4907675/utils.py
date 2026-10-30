@@ -192,11 +192,12 @@ def print_table(title: str, columns: dict) -> None:
     """Print metrics side by side: one column per set of windows, one row per metric."""
     names = list(columns)
     keys = list(dict.fromkeys(k for col in columns.values() for k in col))
+    width = max(22, max(len(k) for k in keys) + 2)
     print(f"\n{title}")
-    print(f"{'metric':22s}" + "".join(f"{n:>24s}" for n in names))
+    print(f"{'metric':{width}s}" + "".join(f"{n:>24s}" for n in names))
     for k in keys:
         cells = "".join(f"{columns[n][k]:>24.4g}" if k in columns[n] else f"{'-':>24s}" for n in names)
-        print(f"{k:22s}{cells}")
+        print(f"{k:{width}s}{cells}")
 
 
 # ----------------------------------------------------------------------------- plots

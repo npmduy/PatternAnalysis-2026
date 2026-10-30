@@ -228,11 +228,14 @@ class Windows(Dataset):
     def seq_len(self):
         return self._seq_len
 
-    def sample(self, n, generator=None, scaled=True):
-        """n random windows [n, T, F] (scaled, or unscaled features) and their anchors [n, F]."""
-        start = torch.randint(0, len(self), (n,), generator=generator)
+    def windows(self, start, scaled=True):
+        """Windows [n, T, F] beginning at rows start [n] (scaled, or unscaled features) and their anchors [n, F]."""
         source = self._x if scaled else self._features
         return source[start[:, None] + torch.arange(self._seq_len)], self._anchors[start]
+
+    def sample(self, n, generator=None, scaled=True):
+        """n random windows [n, T, F] (scaled, or unscaled features) and their anchors [n, F]."""
+        return self.windows(torch.randint(0, len(self), (n,), generator=generator), scaled)
 
 def chrono_split(x, train_frac=0.7, val_frac=0.15):
     n = len(x)

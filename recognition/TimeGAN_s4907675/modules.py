@@ -59,3 +59,24 @@ class TimeGAN(nn.Module):
         h_hat = self.supervisor(e_hat)
         x_hat = self.recovery(h_hat)
         return x_hat, h_hat, e_hat
+
+
+class RGAN(nn.Module):
+    """Baseline recurrent GAN: RCGAN (Esteban et al., 2017) without a condition, like our TimeGAN.
+
+    A GRU generator maps noise straight to data, and a GRU discriminator scores each step of a real
+    or generated window. There is no embedding, supervisor or moment loss: only the adversarial loss.
+    """
+
+    def __init__(self, d, z_dim=None, hidden_dim=24, num_layers=3):
+        super().__init__()
+        self.z_dim = z_dim or d
+        self.generator = GRUNet(self.z_dim, hidden_dim, d, num_layers, torch.sigmoid)
+        self.discriminator = GRUNet(d, hidden_dim, 1, num_layers, None)
+
+    def sample_noise(self, n, seq_len, device=None):
+        return torch.rand(n, seq_len, self.z_dim, device=device)
+
+    def generate(self, n, seq_len, device=None):
+        """A tuple whose first item is the generated windows, as for TimeGAN."""
+        return (self.generator(self.sample_noise(n, seq_len, device)),)

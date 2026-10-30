@@ -5,6 +5,9 @@ Three phases: embedder and recovery pretraining, supervisor training, and joint
 adversarial training. Phase 3 is validated every --eval-every iterations against real
 validation windows; the best checkpoint is then scored once on the held-out test hours.
 
+--model rgan trains the baseline instead: a plain recurrent GAN (RCGAN without a condition),
+which only has phase 3 and only the adversarial loss, with the same data, schedule and evaluation.
+
 --representation picks how books are fed to the model: raw columns, price log returns with
 log1p volumes, gaps (mid-price return, spread and gaps between levels, which makes crossed
 books and unordered levels impossible), or gap_changes (as gaps, but spread and gaps change
@@ -27,15 +30,17 @@ import torch
 import torch.nn.functional as F
 
 from dataset import REPRESENTATIONS, SCALINGS, decode, load_data, max_log_volume
-from modules import TimeGAN
+from modules import RGAN, TimeGAN
 from utils import (TICK, Evaluator, append_csv, describe, mid_price, plot_depth, plot_distributions,
                    plot_training, print_table, to_books, to_raw)
 
 D_UPDATE_THRESHOLD = 0.15  # the discriminator only trains while its loss is above this
+MODELS = {"timegan": TimeGAN, "rgan": RGAN}
 
 
 def parse_args():
-    p = argparse.ArgumentParser(description="Train vanilla TimeGAN on LOBSTER AMZN level-10 order books")
+    p = argparse.ArgumentParser(description="Train TimeGAN, or the RGAN baseline, on LOBSTER AMZN level-10 order books")
+    p.add_argument("--model", choices=list(MODELS), default="timegan")
     p.add_argument("--iters", type=int, default=10_000, help="iterations per training phase")
     p.add_argument("--seq-len", type=int, default=24)
     p.add_argument("--batch-size", type=int, default=128)
@@ -130,6 +135,32 @@ def discriminator_step(model: TimeGAN, optim: torch.optim.Optimizer, x: torch.Te
         optim.step()
     return loss.item()
 
+def rgan_generator_step(model: RGAN, optim: torch.optim.Optimizer, x: torch.Tensor, anchor: torch.Tensor,
+                        lambda_valid: float, to_book) -> dict:
+    """Baseline generator: only the adversarial loss (plus the optional validity penalty)."""
+    x_hat = model.generate(x.size(0), x.size(1), x.device)[0]
+    loss_g_adv = bce_logits(model.discriminator(x_hat), 1.0)
+    loss_valid = validity_penalty(to_book(x_hat, anchor))
+    loss = loss_g_adv + lambda_valid * loss_valid
+
+    model.zero_grad(set_to_none=True)
+    loss.backward()
+    optim.step()
+
+    terms = torch.stack([loss, loss_g_adv, loss_valid]).detach().tolist()
+    return dict(zip(("g_total", "g_adv", "g_valid"), terms))
+
+def rgan_discriminator_step(model: RGAN, optim: torch.optim.Optimizer, x: torch.Tensor) -> float:
+    """Baseline discriminator: real windows against generated ones, in data space."""
+    with torch.no_grad():
+        x_hat = model.generate(x.size(0), x.size(1), x.device)[0]
+    loss = bce_logits(model.discriminator(x), 1.0) + bce_logits(model.discriminator(x_hat), 0.0)
+    if loss.item() > D_UPDATE_THRESHOLD:
+        model.zero_grad(set_to_none=True)
+        loss.backward()
+        optim.step()
+    return loss.item()
+
 
 # ----------------------------------------------------------------------------- helpers
 
@@ -141,11 +172,11 @@ def adam(*nets: torch.nn.Module, lr: float) -> torch.optim.Optimizer:
     return torch.optim.Adam([p for net in nets for p in net.parameters()], lr=lr)
 
 @torch.no_grad()
-def generate_raw(model: TimeGAN, scaler, anchors: torch.Tensor, seq_len: int, representation: str,
+def generate_raw(model: torch.nn.Module, scaler, anchors: torch.Tensor, seq_len: int, representation: str,
                  device) -> np.ndarray:
     """One synthetic window per anchor (a real starting book), in raw LOBSTER units."""
     model.eval()
-    x_hat, _, _ = model.generate(len(anchors), seq_len, device)
+    x_hat = model.generate(len(anchors), seq_len, device)[0]
     model.train()
     return to_raw(scaler, x_hat.cpu(), anchors, representation)
 
@@ -186,7 +217,9 @@ def main():
     generator = torch.Generator().manual_seed(args.seed)  # for sampling real evaluation windows
     device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
     print(f"device: {device}" + (f" ({torch.cuda.get_device_name()})" if device.type == "cuda" else ""))
-    print(f"representation: {args.representation}, scaling: {args.scaling}, lambda_valid: {args.lambda_valid}")
+    print(f"model: {args.model}, representation: {args.representation}, scaling: {args.scaling}, "
+          f"lambda_valid: {args.lambda_valid}")
+    timegan = args.model == "timegan"
 
     train_loader, val_loader, test_loader, scaler = load_data(args.seq_len, args.batch_size, args.representation,
                                                               args.scaling)
@@ -209,35 +242,41 @@ def main():
         """Model output -> raw book, differentiable, for the validity penalty."""
         return decode(scaler.inverse_transform_torch(x_hat), anchor, args.representation)
 
-    model = TimeGAN(train_set.series.size(-1)).to(device)
+    model = MODELS[args.model](train_set.series.size(-1)).to(device)
     print(f"parameters: {sum(p.numel() for p in model.parameters()):,}")
     batches = forever(train_loader)
     history = defaultdict(list)  # loss name -> one value per iteration of its phase
     timing = {}
 
-    # Phase 1: embedder and recovery
-    t0 = time.perf_counter()
-    optim = adam(model.embedder, model.recovery, lr=args.lr)
-    for i in range(args.iters):
-        x, _ = next(batches)
-        history["recon"].append(reconstruction_step(model, optim, x.to(device)))
-        log_progress("phase 1", i, args, t0, history, ["recon"])
-    timing["phase1_s"] = time.perf_counter() - t0
-    print(f"phase 1 done: validation reconstruction MSE {recon_mse(model, val_recon_x, device):.5f}")
+    timing["phase1_s"] = timing["phase2_s"] = 0.0
+    if timegan:
+        # Phase 1: embedder and recovery
+        t0 = time.perf_counter()
+        optim = adam(model.embedder, model.recovery, lr=args.lr)
+        for i in range(args.iters):
+            x, _ = next(batches)
+            history["recon"].append(reconstruction_step(model, optim, x.to(device)))
+            log_progress("phase 1", i, args, t0, history, ["recon"])
+        timing["phase1_s"] = time.perf_counter() - t0
+        print(f"phase 1 done: validation reconstruction MSE {recon_mse(model, val_recon_x, device):.5f}")
 
-    # Phase 2: supervisor (the reference code optimises G and S here; only S receives gradients)
-    t0 = time.perf_counter()
-    optim = adam(model.generator, model.supervisor, lr=args.lr)
-    for i in range(args.iters):
-        x, _ = next(batches)
-        history["supervised"].append(supervisor_step(model, optim, x.to(device)))
-        log_progress("phase 2", i, args, t0, history, ["supervised"])
-    timing["phase2_s"] = time.perf_counter() - t0
+        # Phase 2: supervisor (the reference code optimises G and S here; only S receives gradients)
+        t0 = time.perf_counter()
+        optim = adam(model.generator, model.supervisor, lr=args.lr)
+        for i in range(args.iters):
+            x, _ = next(batches)
+            history["supervised"].append(supervisor_step(model, optim, x.to(device)))
+            log_progress("phase 2", i, args, t0, history, ["supervised"])
+        timing["phase2_s"] = time.perf_counter() - t0
 
-    # Phase 3: joint training, two generator and embedder updates per discriminator update
+    # Phase 3: joint training, two generator (and embedder) updates per discriminator update.
+    # The baseline only has this phase, with the same schedule.
     t0 = time.perf_counter()
-    optim_g = adam(model.generator, model.supervisor, lr=args.lr)
-    optim_e = adam(model.embedder, model.recovery, lr=args.lr)
+    if timegan:
+        optim_g = adam(model.generator, model.supervisor, lr=args.lr)
+        optim_e = adam(model.embedder, model.recovery, lr=args.lr)
+    else:
+        optim_g = adam(model.generator, lr=args.lr)
     optim_d = adam(model.discriminator, lr=args.lr)
     val_rows, best = [], {"score": float("inf"), "iter": None}
     d_updates, last_eval, eval_s = 0, 0, 0.0
@@ -245,23 +284,31 @@ def main():
         g_terms, e_losses = [], []
         for _ in range(2):
             x, anchor = (t.to(device) for t in next(batches))
-            g_terms.append(generator_step(model, optim_g, x, anchor, args.gamma, args.lambda_valid, to_book))
-            e_losses.append(embedder_step(model, optim_e, x))
+            if timegan:
+                g_terms.append(generator_step(model, optim_g, x, anchor, args.gamma, args.lambda_valid, to_book))
+                e_losses.append(embedder_step(model, optim_e, x))
+            else:
+                g_terms.append(rgan_generator_step(model, optim_g, x, anchor, args.lambda_valid, to_book))
         for k in g_terms[0]:
             history[k].append(float(np.mean([g[k] for g in g_terms])))
-        history["e_recon"].append(float(np.mean(e_losses)))
+        if timegan:
+            history["e_recon"].append(float(np.mean(e_losses)))
         x, _ = next(batches)
-        loss_d = discriminator_step(model, optim_d, x.to(device), args.gamma)
+        if timegan:
+            loss_d = discriminator_step(model, optim_d, x.to(device), args.gamma)
+        else:
+            loss_d = rgan_discriminator_step(model, optim_d, x.to(device))
         history["d"].append(loss_d)
         d_updates += loss_d > D_UPDATE_THRESHOLD
-        log_progress("phase 3", i, args, t0, history, ["g_total", "g_valid", "d", "e_recon"])
+        log_progress("phase 3", i, args, t0, history, ["g_total", "g_valid", "d"] + (["e_recon"] if timegan else []))
 
         if (i + 1) % args.eval_every == 0 or i + 1 == args.iters:
             t_eval = time.perf_counter()
             anchors = val_set.sample(args.eval_windows, generator)[1]
             synth = generate_raw(model, scaler, anchors, args.seq_len, args.representation, device)
             row = {"iter": i + 1, "d_update_share": d_updates / (i + 1 - last_eval),
-                   "recon_val": recon_mse(model, val_recon_x, device), **val_eval(synth)}
+                   "recon_val": recon_mse(model, val_recon_x, device) if timegan else float("nan"),
+                   **val_eval(synth)}
             d_updates, last_eval = 0, i + 1
             val_rows.append(row)
             append_csv(args.out_dir / "val_metrics.csv", row)
@@ -269,7 +316,8 @@ def main():
             if row["kl_spread"] + row["kl_returns"] < best["score"]:
                 best = {"score": row["kl_spread"] + row["kl_returns"], "iter": i + 1}
                 save_checkpoint(args.out_dir / "best.pt", model, scaler, history, args)
-            plot_training(history, val_rows, val_reference, args.out_dir / "training_curves.png")
+            plot_training(history, val_rows, val_reference, args.out_dir / "training_curves.png",
+                          d_terms=3 if timegan else 2)
             eval_s += time.perf_counter() - t_eval
             print(f"[validate] {i + 1}/{args.iters}  KL spread {row['kl_spread']:.3f}  KL returns {row['kl_returns']:.3f}  "
                   f"SSIM {row['ssim_pairs']:.3f} pairs / {row['ssim_avg_image']:.3f} avg  crossed {row['crossed']:.3f}  "
@@ -282,11 +330,12 @@ def main():
     synth_last = generate_raw(model, scaler, test_anchors, args.seq_len, args.representation, device)
     model.load_state_dict(torch.load(args.out_dir / "best.pt", map_location=device)["model"])
     synth_best = generate_raw(model, scaler, test_anchors, args.seq_len, args.representation, device)
+    name = "TimeGAN" if timegan else "RGAN"
     results = {
         "real test": describe(real["test"]),
         "real train (reference)": test_eval(real["train"]),
-        f"TimeGAN best (it {best['iter']})": test_eval(synth_best),
-        "TimeGAN last": test_eval(synth_last),
+        f"{name} best (it {best['iter']})": test_eval(synth_best),
+        f"{name} last": test_eval(synth_last),
     }
     print_table("Test: held-out final hours", results)
     plot_distributions(real["test"], real["train"], synth_best, test_eval.return_unit,

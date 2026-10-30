@@ -210,8 +210,12 @@ def _smooth(values, window: int = 100):
     return np.arange(window - 1, len(values)), np.convolve(values, np.ones(window) / window, mode="valid")
 
 
-def plot_training(history: dict, val_rows: list, reference: dict, path: Path) -> None:
-    """Loss curves of every phase, and validation metrics against the targets and real-data reference."""
+def plot_training(history: dict, val_rows: list, reference: dict, path: Path, d_terms: int = 3) -> None:
+    """Loss curves of every phase, and validation metrics against the targets and real-data reference.
+
+    d_terms is the number of BCE terms in the discriminator loss (3 for TimeGAN, 2 for the baseline),
+    which sets the loss of a discriminator that only guesses: d_terms x ln 2.
+    """
     fig, axes = plt.subplots(3, 3, figsize=(16, 12))
 
     def losses(ax, title, keys, log=False):
@@ -234,7 +238,8 @@ def plot_training(history: dict, val_rows: list, reference: dict, path: Path) ->
     losses(axes[0, 0], "Phase 1: reconstruction MSE", ["recon"], log=True)
     losses(axes[0, 1], "Phase 2: supervised loss", ["supervised"], log=True)
     losses(axes[0, 2], "Phase 3: adversarial losses", ["g_adv", "g_adv_e", "d"])
-    axes[0, 2].axhline(3 * np.log(2), color="grey", linestyle=":", linewidth=1, label="D guessing (3 ln 2)")
+    axes[0, 2].axhline(d_terms * np.log(2), color="grey", linestyle=":", linewidth=1,
+                       label=f"D guessing ({d_terms} ln 2)")
     losses(axes[1, 0], "Phase 3: generator supervised, moment and validity terms",
            ["g_sup", "g_moment", "g_valid"], log=True)
     losses(axes[1, 1], "Phase 3: embedder reconstruction MSE", ["e_recon"], log=True)
@@ -264,7 +269,8 @@ def plot_experiments(runs: dict, path: Path) -> None:
         with (folder / "val_metrics.csv").open() as f:
             val = list(csv.DictReader(f))
         for ax, key in zip(axes[0], ("recon", "supervised", "d")):
-            ax.plot(*_smooth(history[key], 200), linewidth=1.2, label=label)
+            if key in history:  # the baseline has no phase 1 or 2
+                ax.plot(*_smooth(history[key], 200), linewidth=1.2, label=label)
         iters = [int(row["iter"]) for row in val]
         for ax, key in zip(axes[1], ("kl_returns", "kl_spread", "any_violation")):
             ax.plot(iters, [float(row[key]) for row in val], marker="o", ms=3, label=label)

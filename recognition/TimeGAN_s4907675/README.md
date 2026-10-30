@@ -397,7 +397,30 @@ Training of our final TimeGAN was stable (see the training figure in the Trainin
 
 ## Recommendation to the project manager
 
-<!-- TODO -->
+My recommendation is that the model is not yet ready to backtest trading algorithms but it is suitable for limited, structural testing.
+
+Strengths:
+- Every generated book is valid
+- The spread, the overall shape of the depth and the VWAP level match the real book
+- Fast generation
+
+Limitations:
+- Prices move more regularly compare to real data
+- Synthetic volumes change more regularly
+- The model is only trained on one day of one stock
+
+Suggested use case: testing code that handles order books, and short scenarios of markets where the spread and the depth shape matter more than price jumps.
+
+## Artificial Intelligence Usage Disclosure
+
+Claude Code (Claude Opus 5.5) was used to write code, building on my first versions of `dataset.py`, `modules.py` and the training loop in `train.py`, and to draft parts of this README from the result files.
+
+**How I verified the AI-assisted work.**
+- I reviewed every change and made every commit myself, one component at a time.
+- For the main metrics, I first worked out what value they should give, then checked the output against it. Some examples:
+  - **When the output matched:** real books score zero crossed books, zero unordered levels and zero validity penalty. Real training hours against test hours give KL returns of 0.007 and an SSIM of 0.83.
+  - **When it did not:** KL spread passes the 0.1 target even though real training hours against test hours give 0.354, which seemed impossible. I double-checked the metric function and accepted the result only once I could explain it: the starting book helps, as discussed earlier in this report.
+- Every number in this README was compared with the result files (`results.json`, `val_metrics.csv` and `period_metrics.csv`).
 
 ## References
 
@@ -405,3 +428,54 @@ Training of our final TimeGAN was stable (see the training figure in the Trainin
 - LOBSTER. (n.d.). *Data samples*. https://php.lobsterdata.com/info/DataSamples.php
 - Yoon, J. (2019). *TimeGAN* [Source code]. GitHub. https://github.com/jsyoon0823/TimeGAN
 - Yoon, J., Jarrett, D., & van der Schaar, M. (2019). Time-series generative adversarial networks. In *Advances in Neural Information Processing Systems 32* (NeurIPS 2019). https://proceedings.neurips.cc/paper_files/paper/2019/file/c9efe5f26cd17ba6216bbe2a7d26d490-Paper.pdf
+
+## Original Feasibility Review
+
+### User Need, Scope & Acceptance Criteria
+
+Intended User: Quant traders
+
+Prototype purpose: Stress-testing execution algorithms
+
+| Metric | Target |
+|---|---|
+| KL divergence, spread | ≤ 0.1 |
+| KL divergence, mid-price returns | ≤ 0.1 |
+| SSIM, average depth image | > 0.6 |
+| SSIM, random window pairs | > 0.6 |
+| Crossed books (bid ≥ ask) | 0 |
+| Out-of-order price levels | 0 |
+| VWAP mean, ask / bid (USD) | match real (221.1 / 220.8) |
+| VWAP std, ask / bid (USD) | match real (0.188 / 0.172) |
+
+### Model Choice & Course Concepts
+
+Dataset: log-return transformation + Min Max scaling
+
+Model: Vanilla TimeGAN + loss penalising invalid books
+
+Difficulty: Hard
+
+Reference: Yoon's paper and codebase
+
+### Preliminary Feasibility Evidence
+
+| Metric | Target | Real train vs test (reference) | Current progress |
+|---|---|---|---|
+| KL divergence, spread | ≤ 0.1 | 0.354 | **0.082** |
+| KL divergence, mid-price returns | ≤ 0.1 | 0.007 | **0.480** |
+| SSIM, average depth image | > 0.6 | 0.832 | **0.820** |
+| Crossed books (bid ≥ ask) | 0 | 0 | **1 of 96,000** |
+| Out-of-order price levels | 0 | 0 | 84% of snapshots |
+| VWAP mean, ask / bid (USD) | match real (221.1 / 220.8) | 223.6 / 223.3 | **221.1 / 220.8** |
+| VWAP std, ask / bid (USD) | match real (0.188 / 0.172) | 1.075 / 1.049 | **0.183 / 0.170** |
+
+### Risks, Budget & Fallback
+
+Key technical risk: KL returns is currently 0.48
+
+Computing budget: Cheap. 10k iterations runs in ~10mins on T4
+
+Next planned experiment: Figure out how to lower KL returns and ensure no cross book by construction
+
+Fallback: At least, I'd have a model with no cross book and meet other criterias

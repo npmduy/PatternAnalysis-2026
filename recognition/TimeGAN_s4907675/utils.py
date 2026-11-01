@@ -24,8 +24,6 @@ ACF_LAGS = 10
 SPREAD_EDGES = np.arange(-10.5, 81.5)  # 1-tick bins centred on -10..80 ticks
 
 
-# ----------------------------------------------------------------------------- windows
-
 def to_books(features: torch.Tensor, anchors: torch.Tensor, representation: str = "raw") -> np.ndarray:
     """Unscaled windows [n, T, F] -> raw books, with prices on the tick grid and whole-share volumes.
 
@@ -44,8 +42,6 @@ def to_raw(scaler, x: torch.Tensor, anchors: torch.Tensor, representation: str =
     n, t, f = x.shape
     return to_books(scaler.inverse_transform(x.reshape(-1, f)).reshape(n, t, f), anchors, representation)
 
-
-# ----------------------------------------------------------------------------- book quantities
 
 def split_book(w: np.ndarray):
     """Ask price, ask volume, bid price, bid volume, each [..., 10]."""
@@ -77,8 +73,6 @@ def log_returns(price: np.ndarray) -> np.ndarray:
     price = np.maximum(price, 1e-9)
     return np.log(price[:, 1:] / price[:, :-1])
 
-
-# ----------------------------------------------------------------------------- metrics
 
 def violations(w: np.ndarray) -> dict:
     """Order-book rules broken per snapshot: crossed or locked book, unordered price ladder, negative volume."""
@@ -190,8 +184,6 @@ class Evaluator:
         return {**describe(w), **{k: float(v) for k, v in scores.items()}}
 
 
-# ----------------------------------------------------------------------------- logging
-
 def append_csv(path: Path, row: dict) -> None:
     """Append one row to a CSV file, writing the header first if the file is new."""
     new = not path.exists()
@@ -213,8 +205,6 @@ def print_table(title: str, columns: dict) -> None:
         cells = "".join(f"{columns[n][k]:>24.4g}" if k in columns[n] else f"{'-':>24s}" for n in names)
         print(f"{k:{width}s}{cells}")
 
-
-# ----------------------------------------------------------------------------- plots
 
 def _smooth(values, window: int = 100):
     """Moving average for noisy loss curves: (x, y)."""

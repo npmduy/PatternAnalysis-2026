@@ -62,8 +62,6 @@ def parse_args():
     return p.parse_args()
 
 
-# ----------------------------------------------------------------------------- losses and steps
-
 def bce_logits(logits, target_logit) -> torch.Tensor:
     """Binary cross-entropy between discriminator logits and a constant label (1 = real, 0 = fake)."""
     return F.binary_cross_entropy_with_logits(logits, torch.full_like(logits, target_logit))
@@ -203,8 +201,6 @@ def rgan_discriminator_step(model: RGAN, optim: torch.optim.Optimizer, x: torch.
     return loss.item()
 
 
-# ----------------------------------------------------------------------------- helpers
-
 def forever(loader: torch.utils.data.DataLoader):
     """Yield batches endlessly, starting a new (reshuffled) pass whenever the loader runs out."""
     while True:
@@ -260,8 +256,6 @@ def log_progress(phase: str, i: int, args, t0: float, history: dict, keys: list)
     losses = "  ".join(f"{k} {np.mean(history[k][-args.log_every:]):.4g}" for k in keys)
     print(f"[{phase}] {i + 1}/{args.iters}  {losses}  ({ms:.1f} ms/it, {ms * (args.iters - i - 1) / 60000:.1f} min left)")
 
-
-# ----------------------------------------------------------------------------- main
 
 def main():
     """Train one model end to end: data, the three phases with validation, then the test and outputs."""

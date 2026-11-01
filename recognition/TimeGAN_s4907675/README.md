@@ -310,14 +310,6 @@ python predict.py --checkpoint outputs/e3b_gap_changes/last.pt --periods 5 --win
 
 *The order book at each event step of one window in period 1: real (left) and synthetic (right), from the same starting book.*
 
-### Heatmaps
-
-For each period, one real window and the synthetic window grown from the same starting book are drawn as depth surfaces: price (cents from the starting mid-price) against event step, with asks in red, bids in blue, and darker meaning more volume.
-
-![Real and synthetic depth surfaces, one pair per period](assets/period_heatmaps.png)
-
-In all five periods, the synthetic book keeps the overall shape of the real one. Asks stay above bids, the spread stays close to the real one, and the depth sits at similar distances from the mid-price. However, the real price levels stay in place for many steps, while the synthetic levels flicker at every step. Some deep levels, mostly on the ask side, also jump away from the mid-price for a few steps, or drift away as in period 1, as their gaps grow. The GIF shows a similar picture: the real book keeps the same volumes at most levels, while the synthetic volumes change at every step. We conclude that our model gets the shape right, but not how slowly the book changes.
-
 ### Summary
 
 Averages over the five periods. For KL and SSIM, the real reference is the score of real windows from the other four periods; for the other rows, it is the real value.
@@ -354,6 +346,26 @@ The five periods' results:
 | 4 | 8.6% / 10.4% | 9.1 / 9.4 | \$0.16 / \$0.19 | 0.14 / 0.15 |
 | 5 | 9.8% / 9.9% | 6.1 / 6.3 | \$0.09 / \$0.15 | 0.40 / 0.13 |
 
+### Main metrics
+
+**Validity.** Our final TimeGAN has no crossed books and no unordered levels in all 120,000 generated snapshots. This means every synthetic book is valid: the best bid is always below the best ask, and the price levels are always in order. This is guaranteed by the gap-change representation, which rebuilds the spread and every gap as at least one cent (Experiment 5). So, for the spec's question, the model never produces crossed books.
+
+**KL spread.** TimeGAN scores 0.014–0.050 across the five periods (average 0.031), well below the target of 0.1. This means the synthetic spreads are distributed almost like the real spreads of the same period. The real reference is much higher (0.12–0.83) because the spread changes a lot during the last 40 minutes, narrowing from about 12 to 6 cents towards the close. The model follows this change because each synthetic window starts from a real book of its period and carries on from its spread, so part of this result comes from the starting book rather than from the model alone.
+
+**KL returns.** TimeGAN scores 0.18–0.26 across the five periods (average 0.23), above the target of 0.1. This means the distribution of mid-price returns in the synthetic windows is close, but not close enough, to the real one. As discussed in the experiments, the synthetic prices move more often than real ones (on 11% of steps against 9%), because the continuous generator struggles to output the exact no-move value.
+
+**SSIM of depth.** TimeGAN scores 0.71–0.83 across the five periods (average 0.78), above the target of 0.6. SSIM compares the structure of two images, 1 meaning identical. Here it compares the average depth image (log volume at each of the 20 levels over the 24 steps) of real and synthetic windows. This means the model spreads volume across the levels in a pattern similar to the real book. It is still below the 0.90–0.96 that real periods score against each other, so the depth is similar but not the same, as the heatmaps below also show.
+
+**Volatility clustering.** TimeGAN scores 0.13–0.18 in autocorrelation of absolute mid-price returns at lag 1 across the five periods (average 0.15), against 0.12–0.19 in real data in the first four periods and 0.40 in the last one. This value measures whether a large price move tends to be followed by another large one. 0 would mean no clustering. This means the model does not collapse into uncorrelated noise, and its clustering matches the real one in the first four periods.
+
+### Other statistics
+
+**VWAP.** The average VWAP matches the real one within a few cents on both sides (ask \$221.09 against \$221.05, bid \$220.77 against \$220.79). VWAP is the volume-weighted average price of the 10 levels on one side, so it summarises where the volume sits. The bid VWAP also varies like the real one (standard deviation \$0.13 against \$0.12), while the ask VWAP varies somewhat more (\$0.15–0.24 against \$0.09–0.16). This is because some deep ask levels jump away from the mid-price, as the heatmaps below show.
+
+**Volume variety.** The ratio of synthetic to real volume standard deviation is 0.74–1.26 across the periods (average 1.10), close to the target of 1. This means the synthetic volumes are about as varied as real ones overall.
+
+**Mean spread.** The synthetic mean spread follows the real one in every period, from 6.3 cents (real: 6.1) in the last period to 12.2 cents (real: 11.9) in the first. As with KL spread, this is helped by starting each window from a real book of its period.
+
 ### Comparison with the RGAN baseline
 
 The baseline is a plain recurrent GAN in the style of RCGAN (Esteban et al., 2017), without a condition or any transformation of the data.
@@ -372,26 +384,21 @@ Our final TimeGAN model is far better than the baseline:
 
 Part of this lead comes from the gap-change representation, but not all of it. Vanilla TimeGAN (Experiment 1), trained on the same raw prices as the baseline, also beats it on unordered levels (26% against 100%), KL returns (0.39 against 2.55), SSIM (0.87 against 0.19) and how often the mid-price moves (49% against 94% of steps; real: 9%), on the test hours. The exception is KL spread (2.57 against 1.10). We can conclude that TimeGAN's architecture helps it learn the dynamics better, and that the representation is what makes its books valid.
 
+### Heatmaps
 
-### Main metrics
+For each period, one real window and the synthetic window grown from the same starting book are drawn as depth surfaces: price (cents from the starting mid-price) against event step, with asks in red, bids in blue, and darker meaning more volume.
 
-**Validity.** Our final TimeGAN has no crossed books and no unordered levels in all 120,000 generated snapshots. This means every synthetic book is valid: the best bid is always below the best ask, and the price levels are always in order. This is guaranteed by the gap-change representation, which rebuilds the spread and every gap as at least one cent (Experiment 5). So, for the spec's question, the model never produces crossed books.
+![Real and synthetic depth surfaces, one pair per period](assets/period_heatmaps.png)
 
-**KL spread.** TimeGAN scores 0.014–0.050 across the five periods (average 0.031), well below the target of 0.1. This means the synthetic spreads are distributed almost like the real spreads of the same period. The real reference is much higher (0.12–0.83) because the spread changes a lot during the last 40 minutes, narrowing from about 12 to 6 cents towards the close. The model follows this change because each synthetic window starts from a real book of its period and carries on from its spread, so part of this result comes from the starting book rather than from the model alone.
+In all five periods, the synthetic book keeps the overall shape of the real one. Asks stay above bids, the spread stays close to the real one, and the depth sits at similar distances from the mid-price. However, the real price levels stay in place for many steps, while the synthetic levels flicker at every step. Some deep levels, mostly on the ask side, also jump away from the mid-price for a few steps, or drift away as in period 1, as their gaps grow. The GIF shows a similar picture: the real book keeps the same volumes at most levels, while the synthetic volumes change at every step. We conclude that our model gets the shape right, but not how slowly the book changes.
 
-**KL returns.** TimeGAN scores 0.18–0.26 across the five periods (average 0.23), above the target of 0.1. This means the distribution of mid-price returns in the synthetic windows is close, but not close enough, to the real one. As discussed in the experiments, the synthetic prices move more often than real ones (on 11% of steps against 9%), because the continuous generator struggles to output the exact no-move value.
+### Error autopsies
 
-**SSIM of depth.** TimeGAN scores 0.71–0.83 across the five periods (average 0.78), above the target of 0.6. SSIM compares the structure of two images, 1 meaning identical. Here it compares the average depth image (log volume at each of the 20 levels over the 24 steps) of real and synthetic windows. This means the model spreads volume across the levels in a pattern similar to the real book. It is still below the 0.90–0.96 that real periods score against each other, so the depth is similar but not the same, as the heatmaps also show.
+Three representative failures of the final model, each seen in the heatmaps and the GIF, and backed by the per-period tables above.
 
-**Volatility clustering.** TimeGAN scores 0.13–0.18 in autocorrelation of absolute mid-price returns at lag 1 across the five periods (average 0.15), against 0.12–0.19 in real data in the first four periods and 0.40 in the last one. This value measures whether a large price move tends to be followed by another large one. 0 would mean no clustering. This means the model does not collapse into uncorrelated noise, and its clustering matches the real one in the first four periods.
-
-### Other statistics
-
-**VWAP.** The average VWAP matches the real one within a few cents on both sides (ask \$221.09 against \$221.05, bid \$220.77 against \$220.79). VWAP is the volume-weighted average price of the 10 levels on one side, so it summarises where the volume sits. The bid VWAP also varies like the real one (standard deviation \$0.13 against \$0.12), while the ask VWAP varies somewhat more (\$0.15–0.24 against \$0.09–0.16). This is because some deep ask levels jump away from the mid-price, as seen in the heatmaps.
-
-**Volume variety.** The ratio of synthetic to real volume standard deviation is 0.74–1.26 across the periods (average 1.10), close to the target of 1. This means the synthetic volumes are about as varied as real ones overall.
-
-**Mean spread.** The synthetic mean spread follows the real one in every period, from 6.3 cents (real: 6.1) in the last period to 12.2 cents (real: 11.9) in the first. As with KL spread, this is helped by starting each window from a real book of its period.
+1. **Deep ask levels drift away.** In the period 1 heatmap, the deep ask levels move further from the mid-price at every step, and in periods 2–5 some jump away for a few steps. Across all windows, the ask VWAP varies more than the real one (standard deviation \$0.15–0.24 against \$0.09–0.16), while the bid side matches. This is caused by the gaps between levels being generated as changes and summed over the window (Experiment 5), so one large or biased change carries on to every later step.
+2. **The book flickers.** Real price levels and volumes stay the same for many events, while the synthetic ones change a little at every step, in every heatmap. In the GIF, the real best bid keeps the same volume through the whole window, while the synthetic one changes at every step. This is caused by "no change" being one exact value, which a continuous generator never quite outputs, while a real book mostly does not change from one event to the next (the same issue as the price moves in Experiment 3).
+3. **Clustering at the close is missed.** In the last period (15:54–16:00), real price moves cluster strongly (autocorrelation 0.40), but the synthetic ones do not (0.13), while the two match in the other four periods. This is caused by the model being trained on the morning and early afternoon only (09:30–14:22), with no input for the time of day, so it generates the same dynamics in every period and cannot know that the closing minutes behave differently.
 
 ### Compute and training stability
 

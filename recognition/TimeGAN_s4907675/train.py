@@ -5,7 +5,7 @@ Three phases: embedder and recovery pretraining, supervisor training, and joint
 adversarial training. Phase 3 is validated every --eval-every iterations against real
 validation windows; the best and the last checkpoints are then scored once on the held-out
 test hours. The loss weights, the discriminator threshold and the schedule follow the
-authors' reference implementation.
+authors' reference implementation (https://github.com/jsyoon0823/TimeGAN).
 
 --model rgan trains the baseline instead: a plain recurrent GAN (RCGAN without a condition),
 which only has phase 3 and only the adversarial loss, with the same data, schedule and evaluation.

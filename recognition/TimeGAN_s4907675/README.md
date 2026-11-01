@@ -28,18 +28,20 @@ In real life, real limit order books (LOBs) are expensive yet essential in the e
 
 | Package | Version tested |
 |---|---|
-| Python | 3.13 |
-| PyTorch | 2.14 |
-| NumPy | 2.5 |
-| Matplotlib | 3.11 |
-| Pillow | 13.0 |
-| scikit-image | 0.26 |
+| Python | 3.13.0 |
+| PyTorch | 2.14.1 |
+| NumPy | 2.5.4 |
+| Matplotlib | 3.11.2 |
+| Pillow | 13.0.0 |
+| scikit-image | 0.26.0 |
 
 ```bash
-pip install torch numpy matplotlib pillow scikit-image
+pip install torch==2.14.1 numpy==2.5.4 matplotlib==3.11.2 pillow==13.0.0 scikit-image==0.26.0
 ```
 
 Training was run on Google Colab with a T4 GPU; `predict.py` runs on a CPU in seconds.
+
+**Reproducibility.** Every run is seeded (`--seed 3710` by default), which fixes the weight initialisation, the generator's noise and the real windows sampled for validation and testing. The split is fixed, and the scalers are fitted on the training rows only. `predict.py` uses the same seed, so it picks the same periods, windows and starting books every time, and rerunning it on a saved checkpoint gives identical results. GPU kernels can still cause small differences between two training runs.
 
 ## Usage
 
@@ -118,7 +120,7 @@ No unoccupied price levels were found, so all rows of the dataset were used.
 
 ### Preprocessing
 
-By default, all columns are scaled by a min-max scaler and the dataset is split chronologically. The first 70% of the rows are used for training, the next 15% for validation and the last 15% for testing.
+By default, all columns are scaled by a min-max scaler fitted on the training rows only, and the dataset is split chronologically: the first 70% of the rows (09:30–14:22) are used for training, the next 15% (14:22–15:22) for validation and the last 15% (15:22–16:00) for testing. Splitting by time rather than at random avoids look-ahead bias. The model only ever learns from earlier hours, the validation hours are used to choose the checkpoint, and the test hours are used only once, at the end, like running the model on a later day.
 
 ## Training
 
@@ -405,6 +407,7 @@ Three representative failures of the final model, each seen in the heatmaps and 
 
 | | TimeGAN (final) | RGAN baseline |
 |---|---|---|
+| Parameters | 55,529 | 24,929 |
 | GPU | Tesla T4 (Colab) | Tesla T4 (Colab) |
 | Peak GPU memory | 142 MB | 135 MB |
 | Training time, 10,000 iterations per phase | 12.1 min (+ 0.4 min validation) | 3.6 min (+ 0.3 min validation) |

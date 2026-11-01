@@ -318,6 +318,7 @@ Averages over the five periods. For KL and SSIM, the real reference is the score
 |---|---|---|---|---|
 | Crossed books | 0 | 0 | 0 of 120,000 | 0 of 120,000 |
 | Unordered price levels | 0 | 0 | 0% | 100% |
+| Negative volumes | 0 | 0 | 0 of 120,000 | 0 of 120,000 |
 | KL spread | ≤ 0.1 | 0.341 | 0.031 | 1.292 |
 | KL returns | ≤ 0.1 | 0.008 | 0.227 | 2.542 |
 | SSIM, average depth | > 0.6 | 0.92 | 0.78 | 0.19 |
@@ -348,7 +349,7 @@ The five periods' results:
 
 ### Main metrics
 
-**Validity.** Our final TimeGAN has no crossed books and no unordered levels in all 120,000 generated snapshots. This means every synthetic book is valid: the best bid is always below the best ask, and the price levels are always in order. This is guaranteed by the gap-change representation, which rebuilds the spread and every gap as at least one cent (Experiment 5). So, for the spec's question, the model never produces crossed books.
+**Validity.** Our final TimeGAN has no crossed books, no unordered levels and no negative volumes in all 120,000 generated snapshots. This means every synthetic book is valid: the best bid is always below the best ask, the price levels are always in order, and every level holds a positive volume. The first two are guaranteed by the gap-change representation, which rebuilds the spread and every gap as at least one cent (Experiment 5). Volumes cannot be negative in any of our models. The generator's outputs lie between 0 and 1, and decoding maps them back within the range of the training data, so a generated volume never falls below the smallest real one.
 
 **KL spread.** TimeGAN scores 0.014–0.050 across the five periods (average 0.031), well below the target of 0.1. This means the synthetic spreads are distributed almost like the real spreads of the same period. The real reference is much higher (0.12–0.83) because the spread changes a lot during the last 40 minutes, narrowing from about 12 to 6 cents towards the close. The model follows this change because each synthetic window starts from a real book of its period and carries on from its spread, so part of this result comes from the starting book rather than from the model alone.
 

@@ -325,6 +325,7 @@ Averages over the five periods. For KL and SSIM, the real reference is the score
 | KL returns | ≤ 0.1 | 0.008 | 0.227 | 2.542 |
 | SSIM, average depth | > 0.6 | 0.92 | 0.78 | 0.19 |
 | Autocorrelation of absolute returns, lag 1 | as real | 0.20 | 0.15 | 0.31 |
+| Excess kurtosis of mid-price returns (fat tails) | as real | 49.6 | 7.5 | 3.8 |
 | Steps where the mid-price moves | as real | 8.9% | 11.3% | 94.0% |
 | VWAP ask, standard deviation | as real | \$0.13 | \$0.19 | \$0.05 |
 | VWAP bid, standard deviation | as real | \$0.12 | \$0.13 | \$0.54 |
@@ -341,13 +342,13 @@ The five periods' results:
 | 4 | 15:47:22–15:54:19 | 0 | 0.0% | 0.032 (0.160) | 0.240 (0.005) | 0.77 (0.93) |
 | 5 | 15:54:19–15:59:59 | 0 | 0.0% | 0.014 (0.834) | 0.257 (0.016) | 0.79 (0.90) |
 
-| Period | Mid-price moves, real / synthetic | Mean spread (cents), real / synthetic | VWAP ask std, real / synthetic | Autocorrelation of absolute returns at lag 1, real / synthetic |
-|---|---|---|---|---|
-| 1 | 8.5% / 12.1% | 11.9 / 12.2 | \$0.13 / \$0.20 | 0.19 / 0.15 |
-| 2 | 10.0% / 12.5% | 11.7 / 12.1 | \$0.15 / \$0.24 | 0.12 / 0.16 |
-| 3 | 7.6% / 11.6% | 9.8 / 10.0 | \$0.11 / \$0.17 | 0.13 / 0.18 |
-| 4 | 8.6% / 10.4% | 9.1 / 9.4 | \$0.16 / \$0.19 | 0.14 / 0.15 |
-| 5 | 9.8% / 9.9% | 6.1 / 6.3 | \$0.09 / \$0.15 | 0.40 / 0.13 |
+| Period | Mid-price moves, real / synthetic | Mean spread (cents), real / synthetic | VWAP ask std, real / synthetic | Autocorrelation of absolute returns at lag 1, real / synthetic | Excess kurtosis, real / synthetic |
+|---|---|---|---|---|---|
+| 1 | 8.5% / 12.1% | 11.9 / 12.2 | \$0.13 / \$0.20 | 0.19 / 0.15 | 55.3 / 6.5 |
+| 2 | 10.0% / 12.5% | 11.7 / 12.1 | \$0.15 / \$0.24 | 0.12 / 0.16 | 58.1 / 6.1 |
+| 3 | 7.6% / 11.6% | 9.8 / 10.0 | \$0.11 / \$0.17 | 0.13 / 0.18 | 42.9 / 7.3 |
+| 4 | 8.6% / 10.4% | 9.1 / 9.4 | \$0.16 / \$0.19 | 0.14 / 0.15 | 51.1 / 8.1 |
+| 5 | 9.8% / 9.9% | 6.1 / 6.3 | \$0.09 / \$0.15 | 0.40 / 0.13 | 40.8 / 9.6 |
 
 ### Main metrics
 
@@ -355,7 +356,7 @@ The five periods' results:
 
 **KL spread.** TimeGAN scores 0.014–0.050 across the five periods (average 0.031), well below the target of 0.1. This means the synthetic spreads are distributed almost like the real spreads of the same period. The real reference is much higher (0.12–0.83) because the spread changes a lot during the last 40 minutes, narrowing from about 12 to 6 cents towards the close. The model follows this change because each synthetic window starts from a real book of its period and carries on from its spread, so part of this result comes from the starting book rather than from the model alone.
 
-**KL returns.** TimeGAN scores 0.18–0.26 across the five periods (average 0.23), above the target of 0.1. This means the distribution of mid-price returns in the synthetic windows is close, but not close enough, to the real one. As discussed in the experiments, the synthetic prices move more often than real ones (on 11% of steps against 9%), because the continuous generator struggles to output the exact no-move value.
+**KL returns.** TimeGAN scores 0.18–0.26 across the five periods (average 0.23), above the target of 0.1. This means the distribution of mid-price returns in the synthetic windows is close, but not close enough, to the real one. As discussed in the experiments, the synthetic prices move more often than real ones (on 11% of steps against 9%), because the continuous generator struggles to output the exact no-move value. The synthetic returns are also much less fat-tailed than the real ones (see Fat tails below).
 
 **SSIM of depth.** TimeGAN scores 0.71–0.83 across the five periods (average 0.78), above the target of 0.6. SSIM compares the structure of two images, 1 meaning identical. Here it compares the average depth image (log volume at each of the 20 levels over the 24 steps) of real and synthetic windows. This means the model spreads volume across the levels in a pattern similar to the real book. It is still below the 0.90–0.96 that real periods score against each other, so the depth is similar but not the same, as the heatmaps below also show.
 
@@ -368,6 +369,8 @@ The five periods' results:
 **Volume variety.** The ratio of synthetic to real volume standard deviation is 0.74–1.26 across the periods (average 1.10), close to the target of 1. This means the synthetic volumes are about as varied as real ones overall.
 
 **Mean spread.** The synthetic mean spread follows the real one in every period, from 6.3 cents (real: 6.1) in the last period to 12.2 cents (real: 11.9) in the first. As with KL spread, this is helped by starting each window from a real book of its period.
+
+**Fat tails.** Real mid-price returns are strongly fat-tailed. Their excess kurtosis is 40.8–58.1 across the periods (average 49.6), where a normal distribution would give 0. This is because the price stays still on most steps and occasionally makes a large jump. TimeGAN's returns are much less fat-tailed (6.1–9.6, average 7.5). This means the model reproduces the small moves, but rarely the large ones, which is part of what keeps KL returns above the target.
 
 ### Comparison with the RGAN baseline
 
@@ -397,7 +400,7 @@ In all five periods, the synthetic book keeps the overall shape of the real one.
 
 ### Error autopsies
 
-Three representative failures of the final model, each seen in the heatmaps and the GIF, and backed by the per-period tables above.
+Three representative failures of the final model, each seen in the heatmaps, the GIF or the per-period tables above.
 
 1. **Deep ask levels drift away.** In the period 1 heatmap, the deep ask levels move further from the mid-price at every step, and in periods 2–5 some jump away for a few steps. Across all windows, the ask VWAP varies more than the real one (standard deviation \$0.15–0.24 against \$0.09–0.16), while the bid side matches. This is caused by the gaps between levels being generated as changes and summed over the window (Experiment 5), so one large or biased change carries on to every later step.
 2. **The book flickers.** Real price levels and volumes stay the same for many events, while the synthetic ones change a little at every step, in every heatmap. In the GIF, the real best bid keeps the same volume through the whole window, while the synthetic one changes at every step. This is caused by "no change" being one exact value, which a continuous generator never quite outputs, while a real book mostly does not change from one event to the next (the same issue as the price moves in Experiment 3).
